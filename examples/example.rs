@@ -1,9 +1,8 @@
 use std::sync::Arc;
 use zarrs::{
     array::{Array, ArrayBuilder},
-    storage::AsyncReadableWritableListableStorage,
+    storage::{AsyncReadableWritableListableStorage, StorePrefix, AsyncReadableWritableListableStorageTraits},
 };
-use zarrs_storage::AsyncReadableWritableListableStorageTraits;
 const PATH: &str = "examples/example.zarrdb";
 
 async fn make_store(first: bool) -> AsyncReadableWritableListableStorage {
@@ -46,6 +45,8 @@ async fn main() {
     let store2 = make_store(false).await;
     let keys = store2.list().await.unwrap();
     println!("Keys: {:?}", keys);
+    let children = store2.list_dir(&StorePrefix::new("").unwrap()).await.unwrap();
+    println!("Children of /: {:?}", children);
     let array = Array::async_open(store2, "/").await.unwrap();
     let out: Vec<u8> = array
         .async_retrieve_array_subset(&[0..16, 0..16])
