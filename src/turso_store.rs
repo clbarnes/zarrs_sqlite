@@ -14,6 +14,9 @@ use zarrs_storage::{
 
 use crate::{APPLICATION_ID, SqliteStoreMetadata};
 
+/// Zarr store backed by an SQLite database using the [turso](https://github.com/tursodatabase/turso) engine.
+///
+/// Implements [zarrs_storage::AsyncReadableWritableListableStorageTraits].
 #[derive(Debug, Clone)]
 pub struct TursoStore {
     database: Database,
@@ -23,6 +26,16 @@ pub struct TursoStore {
 
 impl TursoStore {
     /// If path is None, use an in-memory store.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use zarrs_sqlite::TursoStore;
+    ///
+    /// let mut builder = TursoStore::builder(None);
+    /// builder.create();
+    /// let store = builder.build();
+    /// ```
     pub fn builder(path: Option<&str>) -> TursoStoreBuilder {
         match path {
             Some(p) => TursoStoreBuilder::new(p),
@@ -49,6 +62,7 @@ impl TursoStore {
         self.update_modified_time(jiff::Timestamp::now()).await
     }
 
+    /// Get direct children of this prefix, i.e. keys that start with the prefix and do not have a slash after the prefix.
     async fn list_child_keys(
         &self,
         prefix: &StorePrefix,
@@ -72,6 +86,7 @@ impl TursoStore {
         Ok(keys)
     }
 
+    /// N.B. this trims and deduplicates the prefixes in the DB engine.
     async fn list_child_prefixes(
         &self,
         prefix: &StorePrefix,
@@ -101,6 +116,7 @@ impl TursoStore {
         Ok(prefixes)
     }
 
+    /// Get the metadata of the store.
     pub async fn read_metadata(&self) -> Result<SqliteStoreMetadata, crate::Error> {
         let conn = self.connection()?;
         let mut rows = conn
@@ -116,6 +132,62 @@ impl TursoStore {
         }
 
         builder.build()
+    }
+
+    /// Set up the tables and pragma required by the store.
+    async fn create_schema(&self) -> Result<(), crate::Error> {
+        let conn = self.connection()?;
+        conn.execute_batch(format!(
+            "
+                PRAGMA application_id = 0x{APPLICATION_ID:x};
+                CREATE TABLE sqlitestore_metadata(
+                    k TEXT PRIMARY KEY NOT NULL,
+                    v TEXT NOT NULL
+                );
+                CREATE TABLE zarr(
+                    k TEXT PRIMARY KEY NOT NULL,
+                    v TEXT NOT NULL
+                );
+            "
+        ))
+        .await?;
+        Ok(())
+    }
+
+    /// Overwrite the metadata of the store. This will not delete any unknown metadata keys, but will overwrite any known keys.
+    pub async fn write_metadata(&self, metadata: &SqliteStoreMetadata) -> Result<(), crate::Error> {
+        let conn = self.connection()?;
+        if !metadata.unknown.is_empty() {
+            let results = futures::future::join_all(metadata.unknown.iter().map(|(k, v)| {
+                conn.execute(
+                    "INSERT OR REPLACE INTO sqlitestore_metadata (k, v) VALUES (?1, ?2);",
+                    (k.as_str(), v.as_str()),
+                )
+            }))
+            .await;
+            for r in results {
+                r?;
+            }
+        }
+        conn.execute(
+            "INSERT OR REPLACE INTO sqlitestore_metadata (k, v) VALUES
+                ('sqlitestore_version', ?1),
+                ('compatible_flags', ?2),
+                ('incompatible_flags', ?3),
+                ('created_by', ?4),
+                ('created_time', ?5),
+                ('modified_time', ?6);",
+            (
+                metadata.sqlitestore_version.to_string(),
+                metadata.compatible_flags.to_string(),
+                metadata.incompatible_flags.to_string(),
+                metadata.created_by.clone(),
+                metadata.created_time.to_string(),
+                metadata.modified_time.to_string(),
+            ),
+        )
+        .await?;
+        Ok(())
     }
 }
 
@@ -148,6 +220,11 @@ impl LoggingConnection {
         log::debug!("Executing SQL: {}\n with params: {params:?}", sql.as_ref());
         self.conn.query(sql, params).await
     }
+
+    async fn execute_batch(&self, sql: impl AsRef<str>) -> turso::Result<()> {
+        log::debug!("Executing SQL batch: {}", sql.as_ref());
+        self.conn.execute_batch(sql).await
+    }
 }
 
 pub struct TursoStoreBuilder {
@@ -162,7 +239,7 @@ pub struct TursoStoreBuilder {
 }
 
 impl TursoStoreBuilder {
-    pub fn new(path: impl AsRef<str>) -> Self {
+    fn new(path: impl AsRef<str>) -> Self {
         let s = path.as_ref();
         let path = if s != ":memory:" {
             Some(PathBuf::from(s))
@@ -182,7 +259,7 @@ impl TursoStoreBuilder {
     }
 
     /// Should always be used with `create`.
-    pub fn new_memory() -> Self {
+    fn new_memory() -> Self {
         Self::new(":memory:")
     }
 
@@ -274,52 +351,18 @@ impl TursoStoreBuilder {
             true
         };
         let database = self.builder.build().await?;
-        if init {
-            let conn = database.connect()?;
-            conn.execute(format!("PRAGMA application_id = 0x{APPLICATION_ID:x};"), ())
-                .await?;
-            conn.execute(
-                "CREATE TABLE sqlitestore_metadata(
-                k TEXT PRIMARY KEY NOT NULL,
-                v TEXT NOT NULL
-            );",
-                (),
-            )
-            .await?;
-            conn.execute(
-                "CREATE TABLE zarr(
-                k TEXT PRIMARY KEY NOT NULL,
-                v BLOB NOT NULL
-            );",
-                (),
-            )
-            .await?;
-            let metadata = SqliteStoreMetadata::with_created_by(self.created_by);
-            conn.execute(
-                "INSERT INTO sqlitestore_metadata (k, v) VALUES
-                    ('sqlitestore_version', ?1),
-                    ('compatible_flags', ?2),
-                    ('incompatible_flags', ?3),
-                    ('created_by', ?4),
-                    ('created_time', ?5),
-                    ('modified_time', ?6);",
-                (
-                    metadata.sqlitestore_version.to_string(),
-                    metadata.compatible_flags.to_string(),
-                    metadata.incompatible_flags.to_string(),
-                    metadata.created_by.clone(),
-                    metadata.created_time.to_string(),
-                    metadata.modified_time.to_string(),
-                ),
-            )
-            .await?;
-        }
+
         let store = TursoStore {
             database,
             write: self.write,
             update_timestamp_on_write: self.update_timestamp_on_write,
         };
-        if store.write && !init && !store.update_timestamp_on_write {
+
+        if init {
+            store.create_schema().await?;
+            let metadata = SqliteStoreMetadata::with_created_by(self.created_by);
+            store.write_metadata(&metadata).await?;
+        } else if store.write && !store.update_timestamp_on_write {
             store.update_modified_time_now().await?;
         }
         // TODO: read metadata if init is false
