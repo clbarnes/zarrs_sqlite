@@ -6,28 +6,40 @@ defaults:
     shell: bash
 
 jobs:
-  build:
+  build-toolchain:
     strategy:
       fail-fast: false
       matrix:
         toolchain: ["stable", "1.91", "beta", "nightly"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --all-features
+
+  build-features:
+    strategy:
+      fail-fast: false
+      matrix:
         features:
           - "--no-default-features"
           - '--features ""'
           - "--all-features"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.toolchain }}
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build ${{ matrix.features }}
+
 
   lint:
     runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -37,7 +49,7 @@ jobs:
   test:
     runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-features
@@ -48,6 +60,6 @@ jobs:
   #   steps:
 
   #     - uses: ilammy/setup-nasm@v1
-  #     - uses: actions/checkout@v5
+  #     - uses: actions/checkout@v7
   #     - name: Check SemVer
   #       uses: obi1kenobi/cargo-semver-checks-action@v2
