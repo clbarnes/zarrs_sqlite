@@ -19,14 +19,16 @@ impl Version {
     }
 
     /// Whether the major versions are the same and this version's minor version is greater than or equal to the other version's.
-    pub fn can_read(&self, other: &Version) -> bool {
-        self.may_read(other) && self.minor >= other.minor
+    ///
+    /// i.e. this version's reader SHOULD be able to read data by the other version's writer.
+    pub fn minor_compatible(&self, other: &Version) -> bool {
+        self.major_compatible(other) && self.minor >= other.minor
     }
 
     /// Whether the major versions are the same.
     ///
-    /// A reader with the same major version but a lower minor version should be able to partially read data.
-    pub fn may_read(&self, other: &Version) -> bool {
+    /// i.e. this version's reader SHOULD be able to at least partially read data by the other version's writer.
+    pub fn major_compatible(&self, other: &Version) -> bool {
         self.major == other.major
     }
 }
@@ -125,7 +127,7 @@ pub struct SqliteStoreMetadata {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct MetadataBuilder {
+pub(crate) struct SqliteStoreMetadataBuilder {
     version: Option<Version>,
     compatible_flags: Option<Flags>,
     incompatible_flags: Option<Flags>,
@@ -135,7 +137,7 @@ pub(crate) struct MetadataBuilder {
     unknown: BTreeMap<String, String>,
 }
 
-impl MetadataBuilder {
+impl SqliteStoreMetadataBuilder {
     pub(crate) fn add_key_value(
         &mut self,
         key: impl AsRef<str>,
@@ -224,8 +226,8 @@ impl SqliteStoreMetadata {
         }
     }
 
-    pub(crate) fn builder() -> MetadataBuilder {
-        MetadataBuilder::default()
+    pub(crate) fn builder() -> SqliteStoreMetadataBuilder {
+        SqliteStoreMetadataBuilder::default()
     }
 }
 
