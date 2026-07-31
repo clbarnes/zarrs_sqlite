@@ -7,13 +7,13 @@ Work in progress; see the [specification proposal](https://github.com/auxym/zarr
 ## Usage
 
 ```rust
-let mut builder = zarrs_sqlite::TursoStoreBuilder::new(PATH);
+let mut builder = zarrs_sqlite::TursoStore::builder(Some("path/to/file.zarrdb"));
 
 // By default, this will be read-only and the database file must already exist.
 // The below allows the builder to create a new database, and truncates any existing database.
 builder.create().truncate();
 
-let inner = builder.build().await.expect("Failed to build TursoStore");
+let inner = builder.build().await.unwrap();
 let store: zarrs::storage::AsyncReadableWritableListableStorage = Arc::new(inner);
 ```
 
@@ -24,3 +24,6 @@ let store: zarrs::storage::AsyncReadableWritableListableStorage = Arc::new(inner
 This crate may support multiple SQLite backends in future,
 each behind a cargo feature.
 Today, the only supported backend is [turso](https://github.com/tursodatabase/turso) (the default `backend-turso` feature).
+
+`backend-turso` provides `zarrs_sqlite::TursoStore`, which implements `zarrs::storage::AsyncReadableWritableListableStorageTraits`.
+It requires the use of a [tokio](https://crates.io/crates/tokio) runtime.

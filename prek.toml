@@ -1,0 +1,20 @@
+[[repos]]
+repo = "builtin"
+hooks = [
+    { id = "trailing-whitespace" },
+    { id = "end-of-file-fixer", exclude = "data/.*" },
+    { id = "check-yaml" },
+    { id = "check-toml" },
+    { id = "mixed-line-ending" },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+    { id = "cargo-fmt", name = "cargo fmt", entry = "cargo fmt --", language = "system", types = [
+        "rust",
+    ], pass_filenames = false },
+    { id = "cargo-clippy", name = "cargo clippy", entry = "cargo clippy --all-targets --all-features -- -D warnings", language = "system", types = [
+        "rust",
+    ], pass_filenames = false },
+]

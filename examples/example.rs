@@ -1,12 +1,15 @@
 use std::sync::Arc;
 use zarrs::{
     array::{Array, ArrayBuilder},
-    storage::{AsyncReadableWritableListableStorage, StorePrefix, AsyncReadableWritableListableStorageTraits},
+    storage::{
+        AsyncReadableWritableListableStorage, AsyncReadableWritableListableStorageTraits,
+        StorePrefix,
+    },
 };
 const PATH: &str = "examples/example.zarrdb";
 
 async fn make_store(first: bool) -> AsyncReadableWritableListableStorage {
-    let mut builder = zarrs_sqlite::TursoStoreBuilder::new(PATH);
+    let mut builder = zarrs_sqlite::TursoStore::builder(Some(PATH));
     if first {
         builder.create().truncate().created_by("zarrs_sqlite");
     }
@@ -45,7 +48,10 @@ async fn main() {
     let store2 = make_store(false).await;
     let keys = store2.list().await.unwrap();
     println!("Keys: {:?}", keys);
-    let children = store2.list_dir(&StorePrefix::new("").unwrap()).await.unwrap();
+    let children = store2
+        .list_dir(&StorePrefix::new("").unwrap())
+        .await
+        .unwrap();
     println!("Children of /: {:?}", children);
     let array = Array::async_open(store2, "/").await.unwrap();
     let out: Vec<u8> = array

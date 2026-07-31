@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, fmt::Display, str::FromStr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Display,
+    str::FromStr,
+};
 
 const FLAG_SEPARATOR: char = ',';
 
@@ -46,22 +50,23 @@ impl std::fmt::Display for Version {
 }
 
 impl FromStr for Version {
-    type Err = String;
+    type Err = crate::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut it = s.split('.');
+        let invalid_ver = || crate::Error::invalid_version(s);
         let major = it
             .next()
-            .ok_or_else(|| "no major version part found".to_string())?
+            .ok_or_else(invalid_ver)?
             .parse::<u64>()
-            .map_err(|e| e.to_string())?;
+            .map_err(|_| invalid_ver())?;
         let minor = it
             .next()
-            .ok_or_else(|| "no minor version part found".to_string())?
+            .ok_or_else(invalid_ver)?
             .parse::<u64>()
-            .map_err(|e| e.to_string())?;
+            .map_err(|_| invalid_ver())?;
         if it.next().is_some() {
-            return Err("too many version parts found".to_string());
+            return Err(invalid_ver());
         }
         Ok(Version { major, minor })
     }
@@ -93,6 +98,7 @@ impl Display for Flags {
 }
 
 impl FromStr for Flags {
+    /// Infallible
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -113,44 +119,99 @@ pub struct SqliteStoreMetadata {
     pub incompatible_flags: Flags,
     pub created_by: String,
     pub created_time: jiff::Timestamp,
+    pub modified_time: jiff::Timestamp,
+    /// Any unknown key-value pairs found in the metadata table.
+    pub unknown: BTreeMap<String, String>,
 }
 
-impl SqliteStoreMetadata {
-    pub fn from_strs(
-        version_str: impl AsRef<str>,
-        compatible_flags: impl AsRef<str>,
-        incompatible_flags: impl AsRef<str>,
-        created_by: impl Into<String>,
-        created_time: impl AsRef<str>,
-    ) -> Result<Self, String> {
-        let sqlitestore_version = version_str.as_ref().parse::<Version>()?;
-        let created_time = created_time
-            .as_ref()
-            .parse::<jiff::Timestamp>()
-            .map_err(|e| e.to_string())?;
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MetadataBuilder {
+    version: Option<Version>,
+    compatible_flags: Option<Flags>,
+    incompatible_flags: Option<Flags>,
+    created_by: Option<String>,
+    created_time: Option<jiff::Timestamp>,
+    modified_time: Option<jiff::Timestamp>,
+    unknown: BTreeMap<String, String>,
+}
 
-        // Flags::from_str is infallible
-        let compatible_flags: Flags = compatible_flags.as_ref().parse().unwrap();
-        let incompatible_flags: Flags = incompatible_flags.as_ref().parse().unwrap();
+impl MetadataBuilder {
+    pub(crate) fn add_key_value(
+        &mut self,
+        key: impl AsRef<str>,
+        value: impl AsRef<str>,
+    ) -> Result<bool, crate::Error> {
+        let key = key.as_ref();
+        let value = value.as_ref();
+        let invalid = || crate::Error::InvalidMetadata {
+            key: key.to_string(),
+            value: Some(value.to_string()),
+        };
+        match key {
+            "sqlitestore_version" => {
+                self.version = Some(value.parse().map_err(|_| invalid())?);
+            }
+            "compatible_flags" => {
+                self.compatible_flags = Some(value.parse().map_err(|_| invalid())?);
+            }
+            "incompatible_flags" => {
+                self.incompatible_flags = Some(value.parse().map_err(|_| invalid())?);
+            }
+            "created_by" => {
+                self.created_by = Some(value.to_string());
+            }
+            "created_time" => {
+                self.created_time = Some(value.parse().map_err(|_| invalid())?);
+            }
+            "modified_time" => {
+                self.modified_time = Some(value.parse().map_err(|_| invalid())?);
+            }
+            _ => {
+                self.unknown.insert(key.to_string(), value.to_string());
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 
-        Ok(Self {
-            sqlitestore_version,
+    pub(crate) fn build(self) -> Result<SqliteStoreMetadata, crate::Error> {
+        let version = self.version.ok_or_else(|| crate::Error::InvalidMetadata {
+            key: "sqlitestore_version".to_string(),
+            value: None,
+        })?;
+        let compatible_flags = self.compatible_flags.unwrap_or_default();
+        let incompatible_flags = self.incompatible_flags.unwrap_or_default();
+        let created_by = self.created_by.unwrap_or_default();
+        let created_time = self
+            .created_time
+            .ok_or_else(|| crate::Error::InvalidMetadata {
+                key: "created_time".to_string(),
+                value: None,
+            })?;
+        let modified_time = self.modified_time.unwrap_or(created_time);
+        Ok(SqliteStoreMetadata {
+            sqlitestore_version: version,
             compatible_flags,
             incompatible_flags,
-            created_by: created_by.into(),
+            created_by,
             created_time,
+            modified_time,
+            unknown: self.unknown,
         })
     }
 }
 
 impl Default for SqliteStoreMetadata {
     fn default() -> Self {
+        let t = jiff::Timestamp::now();
         Self {
             sqlitestore_version: crate::LATEST_VERSION,
             compatible_flags: Default::default(),
             incompatible_flags: Default::default(),
             created_by: String::new(),
-            created_time: jiff::Timestamp::now(),
+            created_time: t,
+            modified_time: t,
+            unknown: Default::default(),
         }
     }
 }
@@ -161,6 +222,10 @@ impl SqliteStoreMetadata {
             created_by: created_by.into(),
             ..Default::default()
         }
+    }
+
+    pub(crate) fn builder() -> MetadataBuilder {
+        MetadataBuilder::default()
     }
 }
 

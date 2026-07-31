@@ -1,7 +1,10 @@
 #[cfg(feature = "backend-turso")]
 mod turso_store;
 #[cfg(feature = "backend-turso")]
-pub use {turso, turso_store::TursoStore, turso_store::TursoStoreBuilder};
+pub use {turso, turso_store::TursoStore};
+
+mod error;
+pub use error::{Error, Result};
 
 mod metadata;
 pub use metadata::{Flags, SqliteStoreMetadata, Version};

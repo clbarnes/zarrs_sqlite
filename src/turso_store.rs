@@ -18,32 +18,34 @@ use crate::{APPLICATION_ID, SqliteStoreMetadata};
 pub struct TursoStore {
     database: Database,
     write: bool,
-}
-
-fn turso_to_storage_error(e: turso::Error) -> StorageError {
-    StorageError::Other(format!("Turso error: {e}"))
+    update_timestamp_on_write: bool,
 }
 
 impl TursoStore {
-    fn connection(&self) -> Result<LoggingConnection, StorageError> {
-        self.database
-            .connect()
-            .map_err(turso_to_storage_error)
-            .map(LoggingConnection::from)
+    /// If path is None, use an in-memory store.
+    pub fn builder(path: Option<&str>) -> TursoStoreBuilder {
+        match path {
+            Some(p) => TursoStoreBuilder::new(p),
+            None => TursoStoreBuilder::new_memory(),
+        }
     }
 
-    async fn update_modified_time(&self, timestamp: jiff::Timestamp) -> Result<(), StorageError> {
+    fn connection(&self) -> Result<LoggingConnection, crate::Error> {
+        let conn = self.database.connect()?;
+        Ok(conn.into())
+    }
+
+    async fn update_modified_time(&self, timestamp: jiff::Timestamp) -> Result<(), crate::Error> {
         let conn = self.connection()?;
         conn.execute(
             "INSERT OR REPLACE INTO sqlitestore_metadata(k, v) VALUES ('modified_time', ?1)",
             (timestamp.to_string(),),
         )
-        .await
-        .map_err(turso_to_storage_error)?;
+        .await?;
         Ok(())
     }
 
-    async fn update_modified_time_now(&self) -> Result<(), StorageError> {
+    async fn update_modified_time_now(&self) -> Result<(), crate::Error> {
         self.update_modified_time(jiff::Timestamp::now()).await
     }
 
@@ -51,19 +53,18 @@ impl TursoStore {
         &self,
         prefix: &StorePrefix,
         conn: &LoggingConnection,
-    ) -> Result<StoreKeys, StorageError> {
+    ) -> Result<StoreKeys, crate::Error> {
         let mut rows = conn
             .query(
                 "SELECT k FROM zarr WHERE k LIKE ? and k NOT LIKE ?;",
                 (format!("{prefix}%"), format!("{prefix}%/%")),
             )
-            .await
-            .map_err(turso_to_storage_error)?;
+            .await?;
 
         let mut keys = Vec::default();
 
-        while let Some(row) = rows.next().await.map_err(turso_to_storage_error)? {
-            let key: String = row.get(0).map_err(turso_to_storage_error)?;
+        while let Some(row) = rows.next().await? {
+            let key: String = row.get(0)?;
             if let Ok(k) = StoreKey::new(key.clone()) {
                 keys.push(k);
             }
@@ -75,7 +76,7 @@ impl TursoStore {
         &self,
         prefix: &StorePrefix,
         conn: &LoggingConnection,
-    ) -> Result<Vec<StorePrefix>, StorageError> {
+    ) -> Result<Vec<StorePrefix>, crate::Error> {
         let mut rows = conn
             .query(
                 "SELECT DISTINCT substr(k, 1, instr(substr(k, ?), '/') + ?)
@@ -87,13 +88,12 @@ impl TursoStore {
                     format!("{prefix}%/%"),
                 ),
             )
-            .await
-            .map_err(turso_to_storage_error)?;
+            .await?;
 
         let mut prefixes = Vec::default();
 
-        while let Some(row) = rows.next().await.map_err(turso_to_storage_error)? {
-            let prefix_str: String = row.get(0).map_err(turso_to_storage_error)?;
+        while let Some(row) = rows.next().await? {
+            let prefix_str: String = row.get(0)?;
             if let Ok(p) = StorePrefix::new(prefix_str) {
                 prefixes.push(p);
             }
@@ -101,56 +101,21 @@ impl TursoStore {
         Ok(prefixes)
     }
 
-    pub async fn read_metadata(&self) -> Result<SqliteStoreMetadata, StorageError> {
+    pub async fn read_metadata(&self) -> Result<SqliteStoreMetadata, crate::Error> {
         let conn = self.connection()?;
         let mut rows = conn
             .query("SELECT k, v FROM sqlitestore_metadata;", ())
-            .await
-            .map_err(turso_to_storage_error)?;
+            .await?;
 
-        let mut version_str = None;
-        let mut compatible_flags = None;
-        let mut incompatible_flags = None;
-        let mut created_by = None;
-        let mut created_time = None;
+        let mut builder = SqliteStoreMetadata::builder();
 
-        while let Some(row) = rows.next().await.map_err(turso_to_storage_error)? {
-            let key: String = row.get(0).map_err(turso_to_storage_error)?;
-            let value: String = row.get(1).map_err(turso_to_storage_error)?;
-            match key.as_str() {
-                "sqlitestore_version" => version_str = Some(value),
-                "compatible_flags" => compatible_flags = Some(value),
-                "incompatible_flags" => incompatible_flags = Some(value),
-                "created_by" => created_by = Some(value),
-                "created_time" => created_time = Some(value),
-                _ => {}
-            }
+        while let Some(row) = rows.next().await? {
+            let key: String = row.get(0)?;
+            let value: String = row.get(1)?;
+            builder.add_key_value(key, value)?;
         }
 
-        if let (
-            Some(version_str),
-            Some(compatible_flags),
-            Some(incompatible_flags),
-            Some(created_by),
-            Some(created_time),
-        ) = (
-            version_str,
-            compatible_flags,
-            incompatible_flags,
-            created_by,
-            created_time,
-        ) {
-            SqliteStoreMetadata::from_strs(
-                version_str,
-                compatible_flags,
-                incompatible_flags,
-                created_by,
-                created_time,
-            )
-            .map_err(|e| StorageError::Other(format!("Failed to parse metadata: {}", e)))
-        } else {
-            Err(StorageError::Other("Incomplete metadata".into()))
-        }
+        builder.build()
     }
 }
 
@@ -192,6 +157,7 @@ pub struct TursoStoreBuilder {
     exclusive: bool,
     create: bool,
     truncate: bool,
+    update_timestamp_on_write: bool,
     created_by: String,
 }
 
@@ -210,6 +176,7 @@ impl TursoStoreBuilder {
             exclusive: false,
             create: false,
             truncate: false,
+            update_timestamp_on_write: false,
             created_by: Default::default(),
         }
     }
@@ -259,8 +226,16 @@ impl TursoStoreBuilder {
         self
     }
 
+    /// Update the modified timestamp in the metadata every time the data are mutated.
+    ///
+    /// By default, the timestamp is only updated when the store is opened for writing.
+    pub fn update_timestamp_on_write(&mut self) -> &mut Self {
+        self.update_timestamp_on_write = true;
+        self
+    }
+
     /// Alternatively use `try_into` to block on the result.
-    pub async fn build(self) -> Result<TursoStore, StorageError> {
+    pub async fn build(self) -> Result<TursoStore, crate::Error> {
         let init = if let Some(p) = self.path.as_deref() {
             log::debug!("Looking for DB at {}", p.display());
             let exists = p.is_file();
@@ -298,12 +273,11 @@ impl TursoStoreBuilder {
             log::debug!("Creating new DB in memory");
             true
         };
-        let database = self.builder.build().await.map_err(turso_to_storage_error)?;
+        let database = self.builder.build().await?;
         if init {
-            let conn = database.connect().map_err(turso_to_storage_error)?;
+            let conn = database.connect()?;
             conn.execute(format!("PRAGMA application_id = 0x{APPLICATION_ID:x};"), ())
-                .await
-                .map_err(turso_to_storage_error)?;
+                .await?;
             conn.execute(
                 "CREATE TABLE sqlitestore_metadata(
                 k TEXT PRIMARY KEY NOT NULL,
@@ -311,8 +285,7 @@ impl TursoStoreBuilder {
             );",
                 (),
             )
-            .await
-            .map_err(turso_to_storage_error)?;
+            .await?;
             conn.execute(
                 "CREATE TABLE zarr(
                 k TEXT PRIMARY KEY NOT NULL,
@@ -320,8 +293,7 @@ impl TursoStoreBuilder {
             );",
                 (),
             )
-            .await
-            .map_err(turso_to_storage_error)?;
+            .await?;
             let metadata = SqliteStoreMetadata::with_created_by(self.created_by);
             conn.execute(
                 "INSERT INTO sqlitestore_metadata (k, v) VALUES
@@ -329,31 +301,29 @@ impl TursoStoreBuilder {
                     ('compatible_flags', ?2),
                     ('incompatible_flags', ?3),
                     ('created_by', ?4),
-                    ('created_time', ?5)",
+                    ('created_time', ?5),
+                    ('modified_time', ?6);",
                 (
                     metadata.sqlitestore_version.to_string(),
                     metadata.compatible_flags.to_string(),
                     metadata.incompatible_flags.to_string(),
                     metadata.created_by.clone(),
                     metadata.created_time.to_string(),
+                    metadata.modified_time.to_string(),
                 ),
             )
-            .await
-            .map_err(turso_to_storage_error)?;
+            .await?;
         }
-        // TODO: read metadata if init is false
-        Ok(TursoStore {
+        let store = TursoStore {
             database,
             write: self.write,
-        })
-    }
-}
-
-impl TryFrom<TursoStoreBuilder> for TursoStore {
-    type Error = StorageError;
-
-    fn try_from(builder: TursoStoreBuilder) -> Result<Self, Self::Error> {
-        futures::executor::block_on(builder.build())
+            update_timestamp_on_write: self.update_timestamp_on_write,
+        };
+        if store.write && !init && !store.update_timestamp_on_write {
+            store.update_modified_time_now().await?;
+        }
+        // TODO: read metadata if init is false
+        Ok(store)
     }
 }
 
@@ -367,8 +337,8 @@ impl std::fmt::Display for Substr<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.range {
             ByteRange::FromStart(offset, maybe_len) => match maybe_len {
-                Some(len) => write!(f, "substr({}, {}, {})", self.name, offset, len),
-                None => write!(f, "substr({}, {})", self.name, offset),
+                Some(len) => write!(f, "substr({}, {}, {})", self.name, offset + 1, len),
+                None => write!(f, "substr({}, {})", self.name, offset + 1),
             },
             ByteRange::Suffix(len) => write!(f, "substr({}, -{})", self.name, len),
         }
@@ -393,6 +363,10 @@ fn write_substrs(
         count += 1;
     }
     Ok(count)
+}
+
+fn turso_to_storage_error(err: turso::Error) -> StorageError {
+    crate::Error::from(err).into()
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -593,14 +567,15 @@ impl AsyncWritableStorageTraits for TursoStore {
             return Err(StorageError::ReadOnly);
         }
         let conn = self.connection()?;
-        let val: &[u8] = &value;
         conn.execute(
             "INSERT OR REPLACE INTO zarr(k, v) VALUES (?, ?)",
-            (key.as_str(), val),
+            (key.as_str(), &value[..]),
         )
         .await
         .map_err(turso_to_storage_error)?;
-        self.update_modified_time_now().await?;
+        if self.update_timestamp_on_write {
+            self.update_modified_time_now().await?;
+        }
         Ok(())
     }
 
@@ -642,7 +617,9 @@ impl AsyncWritableStorageTraits for TursoStore {
             .await
             .map_err(turso_to_storage_error)?;
 
-        self.update_modified_time_now().await?;
+        if self.update_timestamp_on_write {
+            self.update_modified_time_now().await?;
+        }
         Ok(())
     }
 
@@ -657,11 +634,189 @@ impl AsyncWritableStorageTraits for TursoStore {
         )
         .await
         .map_err(turso_to_storage_error)?;
-        self.update_modified_time_now().await?;
+        if self.update_timestamp_on_write {
+            self.update_modified_time_now().await?;
+        }
         Ok(())
     }
 
     fn supports_set_partial(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use temp_testdir::TempDir;
+
+    use super::TursoStore;
+    use zarrs_storage::{
+        AsyncReadableWritableListableStorage, Bytes, StoreKey, StorePrefix, byte_range::ByteRange,
+    };
+
+    fn init() {
+        let _ = env_logger::builder().is_test(true).try_init();
+    }
+
+    fn zarrdb_path(dir: impl AsRef<std::path::Path>) -> String {
+        dir.as_ref()
+            .join("test.zarrdb")
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn no_create_store() {
+        init();
+        let dir = TempDir::default();
+        let p = zarrdb_path(&dir);
+
+        assert!(!std::fs::exists(&p).unwrap());
+        let b = TursoStore::builder(Some(&p));
+        assert!(b.build().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_store() {
+        init();
+        let dir = TempDir::default();
+        let p = zarrdb_path(&dir);
+
+        assert!(!std::fs::exists(&p).unwrap());
+        let mut b = TursoStore::builder(Some(&p));
+        b.create();
+        let _store = b.build().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn open_store() {
+        init();
+        let dir = TempDir::default();
+        let p = zarrdb_path(&dir);
+
+        assert!(!std::fs::exists(&p).unwrap());
+        let mut b = TursoStore::builder(Some(&p));
+        b.create();
+        let _store = b.build().await.unwrap();
+
+        let b2 = TursoStore::builder(Some(&p));
+        let _store2 = b2.build().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_metadata() {
+        init();
+        let dir = TempDir::default();
+        let p = zarrdb_path(&dir);
+
+        assert!(!std::fs::exists(&p).unwrap());
+        let mut b = TursoStore::builder(Some(&p));
+        b.create();
+        let store = b.build().await.unwrap();
+        let meta = store.read_metadata().await.unwrap();
+        assert_eq!(meta.sqlitestore_version, crate::LATEST_VERSION);
+    }
+
+    async fn make_memstore() -> AsyncReadableWritableListableStorage {
+        let mut b = TursoStore::builder(None);
+        b.create();
+        let store = b.build().await.unwrap();
+        Arc::new(store)
+    }
+
+    #[tokio::test]
+    async fn truncate_store() {
+        init();
+        let dir = TempDir::default();
+        let p = zarrdb_path(&dir);
+
+        assert!(!std::fs::exists(&p).unwrap());
+        let mut b = TursoStore::builder(Some(&p));
+        b.create();
+        let store = b.build().await.unwrap();
+        let orig_meta = store.read_metadata().await.unwrap();
+
+        let mut b2 = TursoStore::builder(Some(&p));
+        b2.truncate();
+        let store2 = b2.build().await.unwrap();
+        let new_meta = store2.read_metadata().await.unwrap();
+        assert!(new_meta.created_time > orig_meta.created_time);
+    }
+
+    #[tokio::test]
+    async fn roundtrip_bytes() {
+        init();
+        let store = make_memstore().await;
+
+        let key = StoreKey::new("test_key").unwrap();
+        let data = b"Hello, world!";
+        store.set(&key, Bytes::from_static(data)).await.unwrap();
+
+        let read_data = store.get(&key).await.unwrap().unwrap();
+        assert_eq!(data, &read_data[..]);
+    }
+
+    #[tokio::test]
+    async fn partial_bytes() {
+        init();
+        let store = make_memstore().await;
+
+        let key = StoreKey::new("test_key").unwrap();
+        let data = b"Hello, world!";
+        store.set(&key, Bytes::from_static(data)).await.unwrap();
+
+        let test_partial_read = async |br: ByteRange, expected: &[u8]| {
+            let read = store.get_partial(&key, br).await.unwrap().unwrap();
+            assert_eq!(expected, &read[..]);
+        };
+
+        test_partial_read(ByteRange::FromStart(0, Some(5)), &data[0..5]).await;
+        test_partial_read(ByteRange::FromStart(8, None), &data[8..]).await;
+        test_partial_read(ByteRange::FromStart(8, Some(3)), &data[8..11]).await;
+        test_partial_read(ByteRange::Suffix(6), &data[data.len() - 6..]).await;
+    }
+
+    fn check_strlike_contents(test: &[impl ToString], reference: &[impl ToString]) {
+        let mut t: Vec<_> = test.iter().map(ToString::to_string).collect();
+        t.sort();
+
+        let mut r: Vec<_> = reference.iter().map(ToString::to_string).collect();
+        r.sort();
+
+        assert_eq!(t, r);
+    }
+
+    #[tokio::test]
+    async fn list_keys() {
+        init();
+        let store = make_memstore().await;
+
+        let keys: Vec<_> = ["a", "a/b", "a/c/d"]
+            .into_iter()
+            .map(|s| StoreKey::new(s).unwrap())
+            .collect();
+        let data = Bytes::from_static(b"Hello, world!");
+
+        for k in keys.iter() {
+            store.set(k, data.clone()).await.unwrap();
+        }
+
+        let read_keys = store.list().await.unwrap();
+        check_strlike_contents(&read_keys, &keys);
+
+        let read_children = store
+            .list_dir(&StorePrefix::new("a/").unwrap())
+            .await
+            .unwrap();
+        check_strlike_contents(read_children.keys(), &["a/b"]);
+        check_strlike_contents(read_children.prefixes(), &["a/c/"]);
+
+        let read_descendants = store
+            .list_prefix(&StorePrefix::new("a/").unwrap())
+            .await
+            .unwrap();
+        check_strlike_contents(&read_descendants, &["a/b", "a/c/d"]);
     }
 }
