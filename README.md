@@ -7,9 +7,11 @@ Work in progress; see the [specification proposal](https://github.com/auxym/zarr
 ## Usage
 
 ```rust
+/// `None` would build an in-memory database.
 let mut builder = zarrs_sqlite::TursoStore::builder(Some("path/to/file.zarrdb"));
 
-// By default, this will be read-only and the database file must already exist.
+// By default, this will be read-only and the database must already exist.
+
 // The below allows the builder to create a new database, and truncates any existing database.
 builder.create().truncate();
 
