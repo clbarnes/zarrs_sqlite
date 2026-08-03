@@ -160,7 +160,7 @@ impl TursoStore {
     }
 
     /// Overwrite the metadata of the store. This will not delete any unknown metadata keys, but will overwrite any known keys.
-    pub async fn write_metadata(&self, metadata: &SqliteStoreMetadata) -> Result<(), crate::Error> {
+    async fn write_metadata(&self, metadata: &SqliteStoreMetadata) -> Result<(), crate::Error> {
         let conn = self.connection()?;
         if !metadata.unknown.is_empty() {
             let results = futures::future::join_all(metadata.unknown.iter().map(|(k, v)| {

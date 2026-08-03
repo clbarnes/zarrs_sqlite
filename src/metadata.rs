@@ -219,7 +219,7 @@ impl Default for SqliteStoreMetadata {
 }
 
 impl SqliteStoreMetadata {
-    pub fn with_created_by(created_by: impl Into<String>) -> Self {
+    pub(crate) fn with_created_by(created_by: impl Into<String>) -> Self {
         Self {
             created_by: created_by.into(),
             ..Default::default()
@@ -231,8 +231,10 @@ impl SqliteStoreMetadata {
     }
 }
 
-/// Timestamp type wrapping [jiff::Timestamp],
+/// Timestamp type wrapping [crate::jiff::Timestamp],
 /// representing timestamps stored as RFC-3339 strings in UTC in the SQLite metadata table.
+///
+/// Construct using [Self::now()] or [Self::now_second()] for current time, or parse from string using [Self::from_str()], or use [std::convert::From<crate::jiff::Timestamp>].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct SqliteTimestamp(jiff::Timestamp);
 
@@ -287,8 +289,8 @@ impl SqliteTimestamp {
         self.0.subsec_nanosecond() > 0
     }
 
-    pub fn inner(&self) -> &jiff::Timestamp {
-        &self.0
+    pub fn as_jiff(&self) -> jiff::Timestamp {
+        self.0
     }
 }
 
