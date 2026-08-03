@@ -48,18 +48,23 @@ impl TursoStore {
         Ok(conn.into())
     }
 
-    async fn update_modified_time(&self, timestamp: jiff::Timestamp) -> Result<(), crate::Error> {
+    // async fn insert_created_at(&self) -> Result<(), crate::Error> {
+    //     let conn = self.connection()?;
+    //     conn.execute(
+    //         "INSERT INTO zarr_sqlitestore_metadata(k, v) VALUES ('created_at', datetime('now', 'utc', 'subsec'));",
+    //         (),
+    //     )
+    //     .await?;
+    //     Ok(())
+    // }
+
+    async fn update_modified_at(&self) -> Result<(), crate::Error> {
         let conn = self.connection()?;
         conn.execute(
-            "INSERT OR REPLACE INTO sqlitestore_metadata(k, v) VALUES ('modified_time', ?1)",
-            (timestamp.to_string(),),
+            "INSERT OR REPLACE INTO zarr_sqlitestore_metadata(k, v) VALUES ('modified_at', strftime('%Y-%m-%dT%H:%M:%fZ', 'now', 'utc', 'subsec'));", ()
         )
         .await?;
         Ok(())
-    }
-
-    async fn update_modified_time_now(&self) -> Result<(), crate::Error> {
-        self.update_modified_time(jiff::Timestamp::now()).await
     }
 
     /// Get direct children of this prefix, i.e. keys that start with the prefix and do not have a slash after the prefix.
@@ -120,7 +125,7 @@ impl TursoStore {
     pub async fn read_metadata(&self) -> Result<SqliteStoreMetadata, crate::Error> {
         let conn = self.connection()?;
         let mut rows = conn
-            .query("SELECT k, v FROM sqlitestore_metadata;", ())
+            .query("SELECT k, v FROM zarr_sqlitestore_metadata;", ())
             .await?;
 
         let mut builder = SqliteStoreMetadata::builder();
@@ -140,7 +145,7 @@ impl TursoStore {
         conn.execute_batch(format!(
             "
                 PRAGMA application_id = 0x{APPLICATION_ID:x};
-                CREATE TABLE sqlitestore_metadata(
+                CREATE TABLE zarr_sqlitestore_metadata(
                     k TEXT PRIMARY KEY NOT NULL,
                     v TEXT NOT NULL
                 );
@@ -160,7 +165,7 @@ impl TursoStore {
         if !metadata.unknown.is_empty() {
             let results = futures::future::join_all(metadata.unknown.iter().map(|(k, v)| {
                 conn.execute(
-                    "INSERT OR REPLACE INTO sqlitestore_metadata (k, v) VALUES (?1, ?2);",
+                    "INSERT OR REPLACE INTO zarr_sqlitestore_metadata (k, v) VALUES (?1, ?2);",
                     (k.as_str(), v.as_str()),
                 )
             }))
@@ -170,20 +175,20 @@ impl TursoStore {
             }
         }
         conn.execute(
-            "INSERT OR REPLACE INTO sqlitestore_metadata (k, v) VALUES
+            "INSERT OR REPLACE INTO zarr_sqlitestore_metadata (k, v) VALUES
                 ('sqlitestore_version', ?1),
                 ('compatible_flags', ?2),
                 ('incompatible_flags', ?3),
                 ('created_by', ?4),
-                ('created_time', ?5),
-                ('modified_time', ?6);",
+                ('created_at', ?5),
+                ('modified_at', ?6);",
             (
                 metadata.sqlitestore_version.to_string(),
                 metadata.compatible_flags.to_string(),
                 metadata.incompatible_flags.to_string(),
                 metadata.created_by.clone(),
-                metadata.created_time.to_string(),
-                metadata.modified_time.to_string(),
+                metadata.created_at.to_string(),
+                metadata.modified_at.to_string(),
             ),
         )
         .await?;
@@ -363,7 +368,7 @@ impl TursoStoreBuilder {
             let metadata = SqliteStoreMetadata::with_created_by(self.created_by);
             store.write_metadata(&metadata).await?;
         } else if store.write && !store.update_timestamp_on_write {
-            store.update_modified_time_now().await?;
+            store.update_modified_at().await?;
         }
         // TODO: read metadata if init is false
         Ok(store)
@@ -617,7 +622,7 @@ impl AsyncWritableStorageTraits for TursoStore {
         .await
         .map_err(turso_to_storage_error)?;
         if self.update_timestamp_on_write {
-            self.update_modified_time_now().await?;
+            self.update_modified_at().await?;
         }
         Ok(())
     }
@@ -661,7 +666,7 @@ impl AsyncWritableStorageTraits for TursoStore {
             .map_err(turso_to_storage_error)?;
 
         if self.update_timestamp_on_write {
-            self.update_modified_time_now().await?;
+            self.update_modified_at().await?;
         }
         Ok(())
     }
@@ -678,7 +683,7 @@ impl AsyncWritableStorageTraits for TursoStore {
         .await
         .map_err(turso_to_storage_error)?;
         if self.update_timestamp_on_write {
-            self.update_modified_time_now().await?;
+            self.update_modified_at().await?;
         }
         Ok(())
     }
@@ -785,7 +790,7 @@ mod tests {
         b2.truncate();
         let store2 = b2.build().await.unwrap();
         let new_meta = store2.read_metadata().await.unwrap();
-        assert!(new_meta.created_time > orig_meta.created_time);
+        assert!(new_meta.created_at > orig_meta.created_at);
     }
 
     #[tokio::test]

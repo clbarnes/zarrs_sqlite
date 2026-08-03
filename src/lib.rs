@@ -7,7 +7,9 @@ mod error;
 pub use error::{Error, Result};
 
 mod metadata;
-pub use metadata::{Flags, SqliteStoreMetadata, Version};
+pub use metadata::{Flags, SqliteStoreMetadata, SqliteTimestamp, Version};
+
+pub use jiff;
 
 pub const APPLICATION_ID: u32 = 0x10b50760;
 pub const EARLIEST_SUPPORTED_VERSION: Version = Version { major: 1, minor: 0 };

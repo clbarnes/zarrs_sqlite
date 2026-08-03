@@ -22,6 +22,7 @@ default = ["backend-turso"]
 backend-turso = ["dep:turso", "dep:tokio"]
 
 [dev-dependencies]
+criterion = "0.8.2"
 env_logger = "0.11.11"
 temp_testdir = "0.2.3"
 zarrs = { version = "0.23.13", default-features = false, features = ["async"] }

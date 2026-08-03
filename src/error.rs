@@ -13,6 +13,8 @@ pub enum Error {
     InvalidMetadata { key: String, value: Option<String> },
     #[error("Invalid {{major}}.{{minor}} version: {version}")]
     InvalidVersion { version: String },
+    #[error("Invalid timestamp: {0}")]
+    InvalidTimestamp(String),
     #[error("{0}")]
     General(String),
 }
@@ -22,6 +24,10 @@ impl Error {
         Error::InvalidVersion {
             version: version.into(),
         }
+    }
+
+    pub(crate) fn invalid_timestamp(ts: impl Into<String>) -> Self {
+        Error::InvalidTimestamp(ts.into())
     }
 }
 
