@@ -9,6 +9,8 @@ pub use error::{Error, Result};
 mod metadata;
 pub use metadata::{Flags, SqliteStoreMetadata, SqliteTimestamp, Version};
 
+mod queries;
+
 pub use jiff;
 
 pub const APPLICATION_ID: u32 = 0x10b50760;

@@ -1,7 +1,4 @@
-use std::{
-    fmt::{Debug, Write},
-    path::PathBuf,
-};
+use std::{fmt::Debug, path::PathBuf};
 
 use futures::StreamExt;
 use turso::{Connection, Database};
@@ -12,7 +9,10 @@ use zarrs_storage::{
     byte_range::{ByteRange, ByteRangeIterator},
 };
 
-use crate::{APPLICATION_ID, SqliteStoreMetadata};
+use crate::{
+    SqliteStoreMetadata,
+    queries::{self, SUPPORTS_GET_PARTIAL, SUPPORTS_SET_PARTIAL},
+};
 
 /// Zarr store backed by an SQLite database using the [turso](https://github.com/tursodatabase/turso) engine.
 ///
@@ -60,10 +60,8 @@ impl TursoStore {
 
     async fn update_modified_at(&self) -> Result<(), crate::Error> {
         let conn = self.connection()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO zarr_sqlitestore_metadata(k, v) VALUES ('modified_at', strftime('%Y-%m-%dT%H:%M:%fZ', 'now', 'utc', 'subsec'));", ()
-        )
-        .await?;
+        conn.execute(queries::update_modified_at_query(), ())
+            .await?;
         Ok(())
     }
 
@@ -73,12 +71,8 @@ impl TursoStore {
         prefix: &StorePrefix,
         conn: &LoggingConnection,
     ) -> Result<StoreKeys, crate::Error> {
-        let mut rows = conn
-            .query(
-                "SELECT k FROM zarr WHERE k LIKE ? and k NOT LIKE ?;",
-                (format!("{prefix}%"), format!("{prefix}%/%")),
-            )
-            .await?;
+        let (query, params) = queries::list_child_keys_query(prefix);
+        let mut rows = conn.query(query, params).await?;
 
         let mut keys = Vec::default();
 
@@ -97,18 +91,8 @@ impl TursoStore {
         prefix: &StorePrefix,
         conn: &LoggingConnection,
     ) -> Result<Vec<StorePrefix>, crate::Error> {
-        let mut rows = conn
-            .query(
-                "SELECT DISTINCT substr(k, 1, instr(substr(k, ?), '/') + ?)
-                 FROM zarr
-                 WHERE k LIKE ?;",
-                (
-                    prefix.as_str().len() as i64 + 1,
-                    prefix.as_str().len() as i64,
-                    format!("{prefix}%/%"),
-                ),
-            )
-            .await?;
+        let (query, params) = queries::list_dir_prefixes_query(prefix);
+        let mut rows = conn.query(query, params).await?;
 
         let mut prefixes = Vec::default();
 
@@ -124,9 +108,7 @@ impl TursoStore {
     /// Get the metadata of the store.
     pub async fn read_metadata(&self) -> Result<SqliteStoreMetadata, crate::Error> {
         let conn = self.connection()?;
-        let mut rows = conn
-            .query("SELECT k, v FROM zarr_sqlitestore_metadata;", ())
-            .await?;
+        let mut rows = conn.query(queries::read_metadata_query(), ()).await?;
 
         let mut builder = SqliteStoreMetadata::builder();
 
@@ -142,20 +124,7 @@ impl TursoStore {
     /// Set up the tables and pragma required by the store.
     async fn create_schema(&self) -> Result<(), crate::Error> {
         let conn = self.connection()?;
-        conn.execute_batch(format!(
-            "
-                PRAGMA application_id = 0x{APPLICATION_ID:x};
-                CREATE TABLE zarr_sqlitestore_metadata(
-                    k TEXT PRIMARY KEY NOT NULL,
-                    v TEXT NOT NULL
-                );
-                CREATE TABLE zarr(
-                    k TEXT PRIMARY KEY NOT NULL,
-                    v TEXT NOT NULL
-                );
-            "
-        ))
-        .await?;
+        conn.execute_batch(queries::create_schema_queries()).await?;
         Ok(())
     }
 
@@ -164,34 +133,16 @@ impl TursoStore {
         let conn = self.connection()?;
         if !metadata.unknown.is_empty() {
             let results = futures::future::join_all(metadata.unknown.iter().map(|(k, v)| {
-                conn.execute(
-                    "INSERT OR REPLACE INTO zarr_sqlitestore_metadata (k, v) VALUES (?1, ?2);",
-                    (k.as_str(), v.as_str()),
-                )
+                let (query, params) = queries::insert_unknown_metadata_query(k, v);
+                conn.execute(query, params)
             }))
             .await;
             for r in results {
                 r?;
             }
         }
-        conn.execute(
-            "INSERT OR REPLACE INTO zarr_sqlitestore_metadata (k, v) VALUES
-                ('sqlitestore_version', ?1),
-                ('compatible_flags', ?2),
-                ('incompatible_flags', ?3),
-                ('created_by', ?4),
-                ('created_at', ?5),
-                ('modified_at', ?6);",
-            (
-                metadata.sqlitestore_version.to_string(),
-                metadata.compatible_flags.to_string(),
-                metadata.incompatible_flags.to_string(),
-                metadata.created_by.clone(),
-                metadata.created_at.to_string(),
-                metadata.modified_at.to_string(),
-            ),
-        )
-        .await?;
+        let (query, params) = queries::insert_metadata_query(metadata);
+        conn.execute(query, params).await?;
         Ok(())
     }
 }
@@ -375,44 +326,6 @@ impl TursoStoreBuilder {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Substr<'a> {
-    name: &'a str,
-    range: ByteRange,
-}
-
-impl std::fmt::Display for Substr<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.range {
-            ByteRange::FromStart(offset, maybe_len) => match maybe_len {
-                Some(len) => write!(f, "substr({}, {}, {})", self.name, offset + 1, len),
-                None => write!(f, "substr({}, {})", self.name, offset + 1),
-            },
-            ByteRange::Suffix(len) => write!(f, "substr({}, -{})", self.name, len),
-        }
-    }
-}
-
-fn write_substrs(
-    s: &mut String,
-    name: &str,
-    byte_ranges: impl IntoIterator<Item = ByteRange>,
-) -> Result<usize, StorageError> {
-    let mut count = 0;
-    for range in byte_ranges {
-        let substr = Substr { name, range };
-        if count == 0 {
-            s.write_fmt(format_args!("{substr}"))
-                .map_err(|_| StorageError::Other("could not generate SQL".into()))?;
-        } else {
-            s.write_fmt(format_args!(", {substr}"))
-                .map_err(|_| StorageError::Other("could not generate SQL".into()))?;
-        }
-        count += 1;
-    }
-    Ok(count)
-}
-
 fn turso_to_storage_error(err: turso::Error) -> StorageError {
     crate::Error::from(err).into()
 }
@@ -422,8 +335,9 @@ fn turso_to_storage_error(err: turso::Error) -> StorageError {
 impl AsyncReadableStorageTraits for TursoStore {
     async fn get(&self, key: &StoreKey) -> Result<MaybeBytes, StorageError> {
         let conn = self.connection()?;
+        let (query, params) = queries::get_query(key);
         let Some(row) = conn
-            .query("SELECT v FROM zarr WHERE k = ? LIMIT 1;", (key.as_str(),))
+            .query(query, params)
             .await
             .map_err(turso_to_storage_error)?
             .next()
@@ -442,15 +356,9 @@ impl AsyncReadableStorageTraits for TursoStore {
         byte_range: ByteRange,
     ) -> Result<MaybeBytes, StorageError> {
         let conn = self.connection()?;
-        let q = format!(
-            "SELECT {} FROM zarr WHERE k = ? LIMIT 1;",
-            Substr {
-                name: "v",
-                range: byte_range
-            }
-        );
+        let (query, params) = queries::get_partial_query(key, byte_range);
         let Some(row) = conn
-            .query(q, (key.as_str(),))
+            .query(query, params)
             .await
             .map_err(turso_to_storage_error)?
             .next()
@@ -468,18 +376,14 @@ impl AsyncReadableStorageTraits for TursoStore {
         key: &StoreKey,
         byte_ranges: ByteRangeIterator<'a>,
     ) -> Result<AsyncMaybeBytesIterator<'a>, StorageError> {
-        let mut s = String::from("SELECT ");
-
-        let count = write_substrs(&mut s, "v", byte_ranges)?;
-        if count == 0 {
+        let Some((query, params)) = queries::get_partial_many_query(key, byte_ranges) else {
             return Ok(Some(Box::pin(futures::stream::empty())));
-        }
-        s.push_str(" FROM zarr WHERE k = ? LIMIT 1;");
+        };
 
         let conn = self.connection()?;
 
         let Some(row) = conn
-            .query(s, (key.as_str(),))
+            .query(query, params)
             .await
             .map_err(turso_to_storage_error)?
             .next()
@@ -499,11 +403,9 @@ impl AsyncReadableStorageTraits for TursoStore {
 
     async fn size_key(&self, key: &StoreKey) -> Result<Option<u64>, StorageError> {
         let conn = self.connection()?;
+        let (query, params) = queries::get_size_query(key);
         let Some(res) = conn
-            .query(
-                "SELECT length(v) FROM zarr WHERE k = ? LIMIT 1;",
-                (key.as_str(),),
-            )
+            .query(query, params)
             .await
             .map_err(turso_to_storage_error)?
             .next()
@@ -517,7 +419,7 @@ impl AsyncReadableStorageTraits for TursoStore {
     }
 
     fn supports_get_partial(&self) -> bool {
-        true
+        SUPPORTS_GET_PARTIAL
     }
 }
 
@@ -526,8 +428,9 @@ impl AsyncReadableStorageTraits for TursoStore {
 impl AsyncListableStorageTraits for TursoStore {
     async fn list(&self) -> Result<StoreKeys, StorageError> {
         let conn = self.connection()?;
+        let query = queries::list_all_query();
         let mut rows = conn
-            .query("SELECT k FROM zarr;", ())
+            .query(query, ())
             .await
             .map_err(turso_to_storage_error)?;
         let mut out = Vec::default();
@@ -542,11 +445,9 @@ impl AsyncListableStorageTraits for TursoStore {
 
     async fn list_prefix(&self, prefix: &StorePrefix) -> Result<StoreKeys, StorageError> {
         let conn = self.connection()?;
+        let (query, params) = queries::list_prefix_query(prefix);
         let mut rows = conn
-            .query(
-                "SELECT k FROM zarr WHERE k LIKE ?;",
-                (format!("{}%", prefix.as_str()),),
-            )
+            .query(query, params)
             .await
             .map_err(turso_to_storage_error)?;
 
@@ -573,11 +474,9 @@ impl AsyncListableStorageTraits for TursoStore {
 
     async fn size_prefix(&self, prefix: &StorePrefix) -> Result<u64, StorageError> {
         let conn = self.connection()?;
+        let (query, params) = queries::size_prefix_query(prefix);
         let Some(row) = conn
-            .query(
-                "SELECT SUM(LENGTH(v)) FROM zarr WHERE k LIKE ?;",
-                (format!("{prefix}%"),),
-            )
+            .query(query, params)
             .await
             .map_err(turso_to_storage_error)?
             .next()
@@ -593,7 +492,7 @@ impl AsyncListableStorageTraits for TursoStore {
     async fn size(&self) -> Result<u64, StorageError> {
         let conn = self.connection()?;
         let Some(row) = conn
-            .query("SELECT SUM(LENGTH(v)) FROM zarr;", ())
+            .query(queries::size_total_query(), ())
             .await
             .map_err(turso_to_storage_error)?
             .next()
@@ -615,12 +514,10 @@ impl AsyncWritableStorageTraits for TursoStore {
             return Err(StorageError::ReadOnly);
         }
         let conn = self.connection()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO zarr(k, v) VALUES (?, ?)",
-            (key.as_str(), &value[..]),
-        )
-        .await
-        .map_err(turso_to_storage_error)?;
+        let (query, params) = queries::set_query(key, &value[..]);
+        conn.execute(query, params)
+            .await
+            .map_err(turso_to_storage_error)?;
         if self.update_timestamp_on_write {
             self.update_modified_at().await?;
         }
@@ -661,7 +558,8 @@ impl AsyncWritableStorageTraits for TursoStore {
             return Err(StorageError::ReadOnly);
         }
         let conn = self.connection()?;
-        conn.execute("DELETE v FROM zarr WHERE k = ? LIMIT 1;", (key.as_str(),))
+        let (query, params) = queries::erase_query(key);
+        conn.execute(query, params)
             .await
             .map_err(turso_to_storage_error)?;
 
@@ -676,12 +574,10 @@ impl AsyncWritableStorageTraits for TursoStore {
             return Err(StorageError::ReadOnly);
         }
         let conn = self.connection()?;
-        conn.execute(
-            "DELETE v FROM zarr WHERE k LIKE ?;",
-            (format!("{prefix}%"),),
-        )
-        .await
-        .map_err(turso_to_storage_error)?;
+        let (query, params) = queries::erase_prefix_query(prefix);
+        conn.execute(query, params)
+            .await
+            .map_err(turso_to_storage_error)?;
         if self.update_timestamp_on_write {
             self.update_modified_at().await?;
         }
@@ -689,7 +585,7 @@ impl AsyncWritableStorageTraits for TursoStore {
     }
 
     fn supports_set_partial(&self) -> bool {
-        false
+        SUPPORTS_SET_PARTIAL
     }
 }
 
