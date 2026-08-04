@@ -53,8 +53,15 @@ impl Options {
     /// Implies `write`.
     pub fn create(mut self) -> Self {
         self.create = true;
-        self.write = true;
-        self
+        if let Some(p) = self.path.as_deref()
+            && p.extension() != Some(std::ffi::OsStr::new("zarrdb"))
+        {
+            log::warn!(
+                "Zarr SQLite stores SHOULD have extension .zarrdb; got {}",
+                p.display()
+            );
+        }
+        self.write()
     }
 
     /// Fail if the SQLite file already exists.
@@ -63,17 +70,14 @@ impl Options {
     /// Implies `create` and `write`.
     pub fn exclusive(mut self) -> Self {
         self.exclusive = true;
-        self.create = true;
-        self.write = true;
-        self
+        self.create()
     }
 
     /// If the SQLite file already exists, delete it first.
     /// Implies `write`, but not `create`.
     pub fn truncate(mut self) -> Self {
         self.truncate = true;
-        self.write = true;
-        self
+        self.write()
     }
 
     /// Ignored if the database is not newly created by this builder.
