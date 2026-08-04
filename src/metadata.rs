@@ -115,29 +115,29 @@ impl FromIterator<String> for Flags {
 }
 
 #[derive(Debug, Clone)]
-pub struct SqliteStoreMetadata {
+pub struct Metadata {
     pub sqlitestore_version: Version,
     pub compatible_flags: Flags,
     pub incompatible_flags: Flags,
     pub created_by: String,
-    pub created_at: SqliteTimestamp,
-    pub modified_at: SqliteTimestamp,
+    pub created_at: Timestamp,
+    pub modified_at: Timestamp,
     /// Any unknown key-value pairs found in the metadata table.
     pub unknown: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct SqliteStoreMetadataBuilder {
+pub(crate) struct MetadataBuilder {
     version: Option<Version>,
     compatible_flags: Option<Flags>,
     incompatible_flags: Option<Flags>,
     created_by: Option<String>,
-    created_at: Option<SqliteTimestamp>,
-    modified_at: Option<SqliteTimestamp>,
+    created_at: Option<Timestamp>,
+    modified_at: Option<Timestamp>,
     unknown: BTreeMap<String, String>,
 }
 
-impl SqliteStoreMetadataBuilder {
+impl MetadataBuilder {
     pub(crate) fn add_key_value(
         &mut self,
         key: impl AsRef<str>,
@@ -176,7 +176,7 @@ impl SqliteStoreMetadataBuilder {
         Ok(true)
     }
 
-    pub(crate) fn build(self) -> Result<SqliteStoreMetadata, crate::Error> {
+    pub(crate) fn build(self) -> Result<Metadata, crate::Error> {
         let version = self.version.ok_or_else(|| crate::Error::InvalidMetadata {
             key: "sqlitestore_version".to_string(),
             value: None,
@@ -191,7 +191,7 @@ impl SqliteStoreMetadataBuilder {
                 value: None,
             })?;
         let modified_at = self.modified_at.unwrap_or(created_at);
-        Ok(SqliteStoreMetadata {
+        Ok(Metadata {
             sqlitestore_version: version,
             compatible_flags,
             incompatible_flags,
@@ -203,9 +203,9 @@ impl SqliteStoreMetadataBuilder {
     }
 }
 
-impl Default for SqliteStoreMetadata {
+impl Default for Metadata {
     fn default() -> Self {
-        let t = SqliteTimestamp::now();
+        let t = Timestamp::now();
         Self {
             sqlitestore_version: crate::LATEST_VERSION,
             compatible_flags: Default::default(),
@@ -218,7 +218,7 @@ impl Default for SqliteStoreMetadata {
     }
 }
 
-impl SqliteStoreMetadata {
+impl Metadata {
     pub(crate) fn with_created_by(created_by: impl Into<String>) -> Self {
         Self {
             created_by: created_by.into(),
@@ -226,8 +226,8 @@ impl SqliteStoreMetadata {
         }
     }
 
-    pub(crate) fn builder() -> SqliteStoreMetadataBuilder {
-        SqliteStoreMetadataBuilder::default()
+    pub(crate) fn builder() -> MetadataBuilder {
+        MetadataBuilder::default()
     }
 }
 
@@ -236,9 +236,9 @@ impl SqliteStoreMetadata {
 ///
 /// Construct using [Self::now()] or [Self::now_second()] for current time, or parse from string using [Self::from_str()], or use [std::convert::From<crate::jiff::Timestamp>].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct SqliteTimestamp(jiff::Timestamp);
+pub struct Timestamp(jiff::Timestamp);
 
-impl FromStr for SqliteTimestamp {
+impl FromStr for Timestamp {
     type Err = crate::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -257,7 +257,7 @@ impl FromStr for SqliteTimestamp {
     }
 }
 
-impl Display for SqliteTimestamp {
+impl Display for Timestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let fmt = if self.has_subsec() {
             "%Y-%m-%dT%H:%M:%S%.3fZ"
@@ -268,7 +268,7 @@ impl Display for SqliteTimestamp {
     }
 }
 
-impl SqliteTimestamp {
+impl Timestamp {
     pub fn now() -> Self {
         Self(jiff::Timestamp::now())
     }
@@ -294,15 +294,15 @@ impl SqliteTimestamp {
     }
 }
 
-impl From<jiff::Timestamp> for SqliteTimestamp {
+impl From<jiff::Timestamp> for Timestamp {
     fn from(ts: jiff::Timestamp) -> Self {
-        SqliteTimestamp(ts)
+        Timestamp(ts)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::SqliteTimestamp;
+    use crate::Timestamp;
 
     use super::{Flags, Version};
 
@@ -343,22 +343,22 @@ mod tests {
     #[cfg(feature = "backend-turso")]
     #[tokio::test]
     async fn roundtrip_sqlite_date_subsec() {
-        use crate::SqliteTimestamp;
+        use crate::Timestamp;
 
         let ts_str: String =
             query_single("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now', 'utc', 'subsec')").await;
-        let ts: SqliteTimestamp = ts_str.parse().unwrap();
+        let ts: Timestamp = ts_str.parse().unwrap();
         assert_eq!(ts.to_string(), ts_str);
     }
 
     #[cfg(feature = "backend-turso")]
     #[tokio::test]
     async fn roundtrip_sqlite_date() {
-        use crate::SqliteTimestamp;
+        use crate::Timestamp;
 
         let ts_str: String =
             query_single("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now', 'utc')").await;
-        let ts: SqliteTimestamp = ts_str.parse().unwrap();
+        let ts: Timestamp = ts_str.parse().unwrap();
         assert_eq!(ts.to_string(), ts_str);
     }
 
@@ -371,7 +371,7 @@ mod tests {
             "2024-06-01 12:34:56+00:00",
             "2024-06-01 12:34:56+02:00",
         ] {
-            let ts: SqliteTimestamp = s.parse().unwrap();
+            let ts: Timestamp = s.parse().unwrap();
             println!("Parsed timestamp from '{}': {:?}", s, ts);
         }
     }

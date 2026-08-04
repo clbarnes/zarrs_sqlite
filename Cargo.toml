@@ -12,14 +12,18 @@ jiff = { version = "0.2.35", default-features = false, features = [
     "perf-inline",
 ] }
 log = "0.4.33"
+r2d2 = { version = "0.8.10", optional = true }
+r2d2_sqlite = { version = "0.35.0", optional = true }
+rusqlite = { version = "0.40.1", optional = true }
 thiserror = "2.0.19"
 tokio = { version = "1.0", features = ["full"], optional = true }
 turso = { version = "0.7.1", optional = true }
 zarrs_storage = { version = "0.4.5", features = ["async"] }
 
 [features]
-default = ["backend-turso"]
+default = ["backend-rusqlite"]
 backend-turso = ["dep:turso", "dep:tokio"]
+backend-rusqlite = ["dep:rusqlite", "dep:r2d2", "dep:r2d2_sqlite"]
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["async_tokio"] }

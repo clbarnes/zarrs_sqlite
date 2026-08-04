@@ -1,7 +1,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::sync::Arc;
 use zarrs::storage::{AsyncReadableStorageTraits, AsyncWritableStorageTraits, Bytes, StoreKey};
-use zarrs_sqlite::TursoStore;
+use zarrs_sqlite::{Options, TursoStore};
 
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -13,9 +13,9 @@ fn runtime() -> tokio::runtime::Runtime {
 fn create_memory(c: &mut Criterion) {
     c.bench_function("create_memory_store", |b| {
         b.to_async(runtime()).iter(async || {
-            let mut b = TursoStore::builder(None);
-            b.create();
-            let _s = b.build().await.unwrap();
+            let _s = TursoStore::new(&Options::new_memory().create())
+                .await
+                .unwrap();
         })
     });
 }
@@ -35,9 +35,9 @@ fn read_memory(c: &mut Criterion) {
         let v: Vec<_> = (0u64..size).map(|x| (x % 256) as u8).collect();
         let value = Bytes::from_owner(v);
         let store = rt.block_on(async {
-            let mut b = TursoStore::builder(None);
-            b.create();
-            let s = b.build().await.unwrap();
+            let s = TursoStore::new(&Options::new_memory().create())
+                .await
+                .unwrap();
             s.set(&key, value).await.unwrap();
             s
         });
@@ -62,9 +62,9 @@ fn read_memory_concurrent(c: &mut Criterion) {
     let value = Bytes::from_owner(v);
 
     let store = Arc::new(rt.block_on(async {
-        let mut b = TursoStore::builder(None);
-        b.create();
-        let s = b.build().await.unwrap();
+        let s = TursoStore::new(&Options::new_memory().create())
+            .await
+            .unwrap();
         s.set(&key, value).await.unwrap();
         s
     }));

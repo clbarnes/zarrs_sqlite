@@ -8,6 +8,12 @@ pub enum Error {
     #[cfg(feature = "backend-turso")]
     Turso(#[from] turso::Error),
     #[error(transparent)]
+    #[cfg(feature = "backend-rusqlite")]
+    Rusqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    #[cfg(feature = "backend-rusqlite")]
+    R2d2(#[from] r2d2::Error),
+    #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("Invalid store metadata: key={key}, value={value:?}")]
     InvalidMetadata { key: String, value: Option<String> },

@@ -5,7 +5,7 @@ use zarrs_storage::{
     byte_range::{ByteRange, ByteRangeIterator},
 };
 
-use crate::{APPLICATION_ID, SqliteStoreMetadata};
+use crate::{APPLICATION_ID, Metadata};
 
 pub const SUPPORTS_GET_PARTIAL: bool = true;
 pub const SUPPORTS_SET_PARTIAL: bool = false;
@@ -55,7 +55,7 @@ pub fn insert_unknown_metadata_query<'a>(
     )
 }
 
-pub fn insert_metadata_query(metadata: &SqliteStoreMetadata) -> (&'static str, [String; 6]) {
+pub fn insert_metadata_query(metadata: &Metadata) -> (&'static str, [String; 6]) {
     (
         "INSERT OR REPLACE INTO zarr_sqlitestore_metadata (k, v) VALUES
                 ('sqlitestore_version', ?1),
@@ -154,7 +154,7 @@ pub fn get_partial_query(key: &StoreKey, byte_range: ByteRange) -> (String, (&st
 pub fn get_partial_many_query<'a>(
     key: &'a StoreKey,
     byte_ranges: ByteRangeIterator<'_>,
-) -> Option<(String, (&'a str,))> {
+) -> Option<(String, (&'a str,), usize)> {
     let mut s = String::from("SELECT ");
 
     let count = write_substrs(&mut s, "v", byte_ranges);
@@ -162,7 +162,7 @@ pub fn get_partial_many_query<'a>(
         return None;
     }
     s.push_str(" FROM zarr WHERE k = ? LIMIT 1;");
-    Some((s, (key.as_str(),)))
+    Some((s, (key.as_str(),), count))
 }
 
 /// Returns 0-1 rows with 1 integer column.

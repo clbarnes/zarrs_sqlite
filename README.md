@@ -23,9 +23,9 @@ let store: zarrs::storage::AsyncReadableWritableListableStorage = Arc::new(inner
 
 ### Backends
 
-This crate may support multiple SQLite backends in future,
-each behind a cargo feature.
-Today, the only supported backend is [turso](https://github.com/tursodatabase/turso) (the default `backend-turso` feature).
+This crate supports multiple SQLite backends, each behind a cargo feature.
 
-`backend-turso` provides `zarrs_sqlite::TursoStore`, which implements `zarrs::storage::AsyncReadableWritableListableStorageTraits`.
-It requires the use of a [tokio](https://crates.io/crates/tokio) runtime.
+| store | feature | backend | notes |
+| - | - | - | - |
+| `zarrs_sqlite::TursoStore` | `backend-turso` | [turso](https://github.com/tursodatabase/turso) | Async (requires tokio), WAL mode, pure rust |
+| `zarrs_sqlite::RusqliteStore` | `backend-rusqlite` | [rusqlite](https://github.com/rusqlite/rusqlite) + [r2d2](https://github.com/sfackler/r2d2) | Sync, binds to libsqlite3; default |

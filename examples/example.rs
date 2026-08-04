@@ -9,11 +9,13 @@ use zarrs::{
 const PATH: &str = "examples/example.zarrdb";
 
 async fn make_store(first: bool) -> AsyncReadableWritableListableStorage {
-    let mut builder = zarrs_sqlite::TursoStore::builder(Some(PATH));
+    let mut opts = zarrs_sqlite::Options::new_local(PATH);
     if first {
-        builder.create().truncate().created_by("zarrs_sqlite");
-    }
-    let store = builder.build().await.expect("Failed to build TursoStore");
+        opts = opts.create().truncate();
+    };
+    let store = zarrs_sqlite::TursoStore::new(&opts)
+        .await
+        .expect("Failed to build TursoStore");
     let metadata = store
         .read_metadata()
         .await
