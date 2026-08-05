@@ -24,3 +24,10 @@ pub const APPLICATION_ID: u32 = 0x10b50760;
 pub const EARLIEST_SUPPORTED_VERSION: Version = Version { major: 1, minor: 0 };
 pub const LATEST_VERSION: Version = Version { major: 1, minor: 0 };
 const DEFAULT_CREATED_BY: &str = concat!("zarrs_sqlite v", env!("CARGO_PKG_VERSION"));
+
+#[cfg(test)]
+pub(crate) mod tests {
+    pub fn init() {
+        let _ = env_logger::builder().is_test(true).try_init();
+    }
+}

@@ -1,4 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 use std::sync::Arc;
 use zarrs::storage::{AsyncReadableStorageTraits, AsyncWritableStorageTraits, Bytes, StoreKey};
 use zarrs_sqlite::{Options, TursoStore};
@@ -11,9 +12,9 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 fn create_memory(c: &mut Criterion) {
-    c.bench_function("create_memory_store", |b| {
+    c.bench_function("turso_create_memory_store", |b| {
         b.to_async(runtime()).iter(async || {
-            let _s = TursoStore::new(&Options::new_memory().create())
+            let _s = TursoStore::new(black_box(&Options::new_memory().create()))
                 .await
                 .unwrap();
         })
@@ -28,7 +29,7 @@ fn read_memory(c: &mut Criterion) {
     let rt = runtime();
     let key = StoreKey::new("key").unwrap();
 
-    let mut group = c.benchmark_group("read_memory");
+    let mut group = c.benchmark_group("turso_read_memory");
 
     for size_kib in [0, 1, 8, 64, 128] {
         let size = size_kib * 1024;
@@ -56,7 +57,7 @@ fn read_memory_concurrent(c: &mut Criterion) {
     let rt = runtime();
     let key = StoreKey::new("key").unwrap();
 
-    let mut group = c.benchmark_group("read_memory_concurrent");
+    let mut group = c.benchmark_group("turso_read_memory_concurrent");
     let size: u64 = 1024 * 1024;
     let v: Vec<_> = (0..size).map(|x| (x % 256) as u8).collect();
     let value = Bytes::from_owner(v);

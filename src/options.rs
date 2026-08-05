@@ -95,6 +95,7 @@ impl Options {
     }
 
     pub(crate) fn check_existence(&self) -> crate::Result<bool> {
+        log::debug!("Opening DB with {:?}", self);
         let init = if let Some(p) = self.path.as_deref() {
             log::debug!("Looking for DB at {}", p.display());
             let exists = p.is_file();

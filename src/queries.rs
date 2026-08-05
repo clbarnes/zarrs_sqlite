@@ -22,19 +22,19 @@ pub fn create_metadata_table_query() -> &'static str {
 }
 
 pub fn create_zarr_table_query() -> &'static str {
-    "CREATE TABLE zarr_sqlitestore(
+    "CREATE TABLE zarr (
         k TEXT PRIMARY KEY NOT NULL,
         v BLOB NOT NULL
     );"
 }
 
 pub fn create_schema_queries() -> String {
-    let mut s = set_pragma_query();
-    s.push('\n');
-    s.push_str(create_metadata_table_query());
-    s.push('\n');
-    s.push_str(create_zarr_table_query());
-    s
+    format!(
+        "BEGIN;\n{}\n{}\n{}\nCOMMIT;",
+        set_pragma_query(),
+        create_metadata_table_query(),
+        create_zarr_table_query()
+    )
 }
 
 pub fn update_modified_at_query() -> &'static str {

@@ -6,7 +6,7 @@ use zarrs::{
         StorePrefix,
     },
 };
-const PATH: &str = "examples/example.zarrdb";
+const PATH: &str = "examples/turso_example.zarrdb";
 
 async fn make_store(first: bool) -> AsyncReadableWritableListableStorage {
     let mut opts = zarrs_sqlite::Options::new_local(PATH);

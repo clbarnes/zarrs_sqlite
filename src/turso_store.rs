@@ -455,6 +455,7 @@ impl AsyncWritableStorageTraits for TursoStore {
 
 #[cfg(test)]
 mod tests {
+    use crate::tests::init;
     use std::sync::Arc;
     use temp_testdir::TempDir;
 
@@ -463,10 +464,6 @@ mod tests {
     use zarrs_storage::{
         AsyncReadableWritableListableStorage, Bytes, StoreKey, StorePrefix, byte_range::ByteRange,
     };
-
-    fn init() {
-        let _ = env_logger::builder().is_test(true).try_init();
-    }
 
     fn zarrdb_path(dir: impl AsRef<std::path::Path>) -> String {
         dir.as_ref()
