@@ -1,7 +1,14 @@
 [package]
 name = "zarrs_sqlite"
+authors =["Chris Barnes <chrislloydbarnes@gmail.com>"]
+description = "SQLite store for the zarrs ecosystem"
+license = "MIT"
+repository = "https://github.com/clbarnes/zarrs_sqlite"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+keywords = ["zarr", "zarrs", "sqlite", "turso", "async", "storage"]
+categories = ["database", "science"]
 
 [dependencies]
 async-trait = { version = "0.1.91", optional = true }
