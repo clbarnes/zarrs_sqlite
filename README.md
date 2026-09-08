@@ -1,8 +1,6 @@
 # zarrs_sqlite
 
-An SQLite-based Zarr store for the [zarrs](https://zarrs.dev/) ecosystem.
-
-Work in progress; see the [specification proposal](https://github.com/auxym/zarr-sqlite-python/pull/4).
+An SQLite-based Zarr store for the [zarrs](https://zarrs.dev/) ecosystem, implementing the [zarr-sqlite-python specification](https://github.com/auxym/zarr-sqlite-python/blob/main/SPEC.md).
 
 ## Usage
 
@@ -27,5 +25,5 @@ This crate supports multiple SQLite backends, each behind a cargo feature.
 
 | store | feature | backend | notes |
 | - | - | - | - |
-| `zarrs_sqlite::TursoStore` | `backend-turso` | [turso](https://github.com/tursodatabase/turso) | Async (requires tokio), WAL mode, pure rust |
 | `zarrs_sqlite::RusqliteStore` | `backend-rusqlite` | [rusqlite](https://github.com/rusqlite/rusqlite) + [r2d2](https://github.com/sfackler/r2d2) | Sync, binds to libsqlite3; default |
+| `zarrs_sqlite::TursoStore` | `backend-turso` | [turso](https://github.com/tursodatabase/turso) | Async (requires tokio), pure rust |
