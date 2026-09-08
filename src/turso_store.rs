@@ -79,46 +79,6 @@ impl TursoStore {
         Ok(())
     }
 
-    /// Get direct children of this prefix, i.e. keys that start with the prefix and do not have a slash after the prefix.
-    async fn list_child_keys(
-        &self,
-        prefix: &StorePrefix,
-        conn: &LoggingConnection,
-    ) -> Result<StoreKeys, crate::Error> {
-        let (query, params) = queries::list_child_keys_query(prefix);
-        let mut rows = conn.query(query, params).await?;
-
-        let mut keys = Vec::default();
-
-        while let Some(row) = rows.next().await? {
-            let key: String = row.get(0)?;
-            if let Ok(k) = StoreKey::new(key.clone()) {
-                keys.push(k);
-            }
-        }
-        Ok(keys)
-    }
-
-    /// N.B. this trims and deduplicates the prefixes in the DB engine.
-    async fn list_child_prefixes(
-        &self,
-        prefix: &StorePrefix,
-        conn: &LoggingConnection,
-    ) -> Result<Vec<StorePrefix>, crate::Error> {
-        let (query, params) = queries::list_dir_prefixes_query(prefix);
-        let mut rows = conn.query(query, params).await?;
-
-        let mut prefixes = Vec::default();
-
-        while let Some(row) = rows.next().await? {
-            let prefix_str: String = row.get(0)?;
-            if let Ok(p) = StorePrefix::new(prefix_str) {
-                prefixes.push(p);
-            }
-        }
-        Ok(prefixes)
-    }
-
     /// Get the metadata of the store.
     pub async fn read_metadata(&self) -> Result<Metadata, crate::Error> {
         let conn = self.connection()?;
@@ -142,6 +102,41 @@ impl TursoStore {
         Ok(())
     }
 
+    async fn list_dir_inner(
+        &self,
+        query: &str,
+        params: impl turso::IntoParams + Debug,
+    ) -> Result<StoreKeysPrefixes, StorageError> {
+        let mut keys = Vec::default();
+        let mut prefixes = Vec::default();
+
+        let conn = self.connection()?;
+        let mut rows = conn
+            .query(query, params)
+            .await
+            .map_err(crate::Error::from)?;
+        while let Some(row) = rows.next().await.map_err(crate::Error::from)? {
+            let tp_val = row.get_value(0).map_err(crate::Error::from)?;
+            let tp = tp_val.as_text().expect("returned value should be text");
+            let value_val = row.get_value(1).map_err(crate::Error::from)?;
+            let value = value_val.as_text().expect("returned value should be text");
+            match tp.as_str() {
+                "k" => match StoreKey::new(value) {
+                    Ok(k) => keys.push(k),
+                    Err(e) => log::warn!("Ignoring invalid store key '{value}': {e}"),
+                },
+                "p" => match StorePrefix::new(value) {
+                    Ok(p) => prefixes.push(p),
+                    Err(e) => log::warn!("Ignoring invalid store key '{value}': {e}"),
+                },
+                s => {
+                    log::warn!("Ignoring list_dir value of unknown type '{s}': '{value}'")
+                }
+            }
+        }
+        Ok(StoreKeysPrefixes::new(keys, prefixes))
+    }
+
     /// Overwrite the metadata of the store. This will not delete any unknown metadata keys, but will overwrite any known keys.
     async fn write_metadata(&self, metadata: &Metadata) -> Result<(), crate::Error> {
         let conn = self.connection()?;
@@ -155,8 +150,14 @@ impl TursoStore {
                 r?;
             }
         }
-        let (query, params) = queries::insert_metadata_query(metadata);
-        conn.execute(query, params).await?;
+        let (q, p) = queries::insert_core_metadata_query(metadata);
+        conn.execute(q, p).await?;
+        if let Some((q, p)) = queries::maybe_insert_created_by_query(metadata) {
+            conn.execute(q, p).await?;
+        }
+        if let Some((q, p)) = queries::maybe_insert_modified_at_query(metadata) {
+            conn.execute(q, p).await?;
+        }
         Ok(())
     }
 }
@@ -308,8 +309,10 @@ impl AsyncListableStorageTraits for TursoStore {
     }
 
     async fn list_prefix(&self, prefix: &StorePrefix) -> Result<StoreKeys, StorageError> {
+        let Some((query, params)) = queries::list_prefix_query(prefix) else {
+            return self.list().await;
+        };
         let conn = self.connection()?;
-        let (query, params) = queries::list_prefix_query(prefix);
         let mut rows = conn
             .query(query, params)
             .await
@@ -326,19 +329,18 @@ impl AsyncListableStorageTraits for TursoStore {
     }
 
     async fn list_dir(&self, prefix: &StorePrefix) -> Result<StoreKeysPrefixes, StorageError> {
-        let conn = self.connection()?;
-
-        let (keys, prefixes) = futures::try_join!(
-            self.list_child_keys(prefix, &conn),
-            self.list_child_prefixes(prefix, &conn)
-        )?;
-
-        Ok(StoreKeysPrefixes::new(keys, prefixes))
+        let Some((query, params)) = queries::list_dir_query(prefix) else {
+            let q = queries::list_dir_root_query();
+            return self.list_dir_inner(q, ()).await;
+        };
+        self.list_dir_inner(query, params).await
     }
 
     async fn size_prefix(&self, prefix: &StorePrefix) -> Result<u64, StorageError> {
+        let Some((query, params)) = queries::size_prefix_query(prefix) else {
+            return self.size().await;
+        };
         let conn = self.connection()?;
-        let (query, params) = queries::size_prefix_query(prefix);
         let Some(row) = conn
             .query(query, params)
             .await
@@ -539,16 +541,17 @@ mod tests {
         let p = zarrdb_path(&dir);
 
         assert!(!std::fs::exists(&p).unwrap());
-        let store = TursoStore::new(&Options::new_local(&p).create())
+        let store = TursoStore::new(&Options::new_local(&p).create().created_by("first"))
             .await
             .unwrap();
         let orig_meta = store.read_metadata().await.unwrap();
+        assert_eq!(orig_meta.created_by.as_deref(), Some("first"));
 
-        let store2 = TursoStore::new(&Options::new_local(&p).truncate())
+        let store2 = TursoStore::new(&Options::new_local(&p).truncate().created_by("second"))
             .await
             .unwrap();
         let new_meta = store2.read_metadata().await.unwrap();
-        assert!(new_meta.created_at > orig_meta.created_at);
+        assert_eq!(new_meta.created_by.as_deref(), Some("second"));
     }
 
     #[tokio::test]

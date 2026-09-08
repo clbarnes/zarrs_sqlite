@@ -77,8 +77,14 @@ impl RusqliteStore {
             let (query, params) = crate::queries::insert_unknown_metadata_query(k, v);
             conn.execute(query, params)?;
         }
-        let (query, params) = queries::insert_metadata_query(metadata);
+        let (query, params) = queries::insert_core_metadata_query(metadata);
         conn.execute(query, params)?;
+        if let Some((query, params)) = queries::maybe_insert_created_by_query(metadata) {
+            conn.execute(query, params)?;
+        }
+        if let Some((query, params)) = queries::maybe_insert_modified_at_query(metadata) {
+            conn.execute(query, params)?;
+        }
         Ok(())
     }
 
@@ -99,44 +105,44 @@ impl RusqliteStore {
         Ok(conn)
     }
 
-    fn list_child_keys(
+    fn list_dir_inner(
         &self,
-        conn: &r2d2::PooledConnection<SqliteConnectionManager>,
-        prefix: &StorePrefix,
-    ) -> Result<StoreKeys, StorageError> {
-        let (query, params) = queries::list_child_keys_query(prefix);
+        query: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<StoreKeysPrefixes, StorageError> {
+        let conn = self.connection()?;
         let mut stmt = conn.prepare(query).map_err(crate::Error::from)?;
-        let it = stmt
-            .query_map(params, |r| r.get::<_, String>(0))
-            .map_err(crate::Error::from)?
-            .filter_map(|res| match res {
-                Ok(key_str) => match StoreKey::new(&key_str) {
-                    Ok(store_key) => Some(Ok(store_key)),
-                    Err(_e) => None,
-                },
-                Err(e) => Some(Err(crate::Error::from(e).into())),
-            });
-        it.collect()
-    }
-
-    fn list_child_prefixes(
-        &self,
-        conn: &r2d2::PooledConnection<SqliteConnectionManager>,
-        prefix: &StorePrefix,
-    ) -> Result<Vec<StorePrefix>, StorageError> {
-        let (query, params) = queries::list_dir_prefixes_query(prefix);
-        let mut stmt = conn.prepare(query).map_err(crate::Error::from)?;
-        let it = stmt
-            .query_map(params, |r| r.get::<_, String>(0))
-            .map_err(crate::Error::from)?
-            .filter_map(|res| match res {
-                Ok(prefix_str) => match StorePrefix::new(&prefix_str) {
-                    Ok(store_prefix) => Some(Ok(store_prefix)),
-                    Err(_e) => None,
-                },
-                Err(e) => Some(Err(crate::Error::from(e).into())),
-            });
-        it.collect()
+        let mut keys = vec![];
+        let mut prefixes = vec![];
+        stmt.query_map(params, |r| {
+            let tp = r.get_ref(0)?.as_str()?;
+            let value = r.get_ref(1)?.as_str()?;
+            match tp {
+                "k" => {
+                    match StoreKey::new(value) {
+                        Ok(k) => keys.push(k),
+                        Err(e) => {
+                            log::warn!("Ignoring invalid store key '{value}': {e}")
+                        }
+                    };
+                }
+                "p" => {
+                    match StorePrefix::new(value) {
+                        Ok(p) => prefixes.push(p),
+                        Err(e) => {
+                            log::warn!("Ignoring invalid store prefix '{value}': {e}")
+                        }
+                    };
+                }
+                s => {
+                    log::warn!("Ignoring list_dir value of unknown type '{s}': '{value}'")
+                }
+            };
+            Ok(())
+        })
+        .map_err(crate::Error::from)?
+        .last();
+        Ok(StoreKeysPrefixes::new(keys, prefixes))
     }
 }
 
@@ -232,8 +238,10 @@ impl ListableStorageTraits for RusqliteStore {
     }
 
     fn list_prefix(&self, prefix: &StorePrefix) -> Result<StoreKeys, StorageError> {
+        let Some((query, params)) = queries::list_prefix_query(prefix) else {
+            return self.list();
+        };
         let conn = self.connection()?;
-        let (query, params) = queries::list_prefix_query(prefix);
         let mut stmt = conn.prepare(query).map_err(crate::Error::from)?;
         let it = stmt
             .query_map(params, |r| r.get::<_, String>(0))
@@ -249,16 +257,18 @@ impl ListableStorageTraits for RusqliteStore {
     }
 
     fn list_dir(&self, prefix: &StorePrefix) -> Result<StoreKeysPrefixes, StorageError> {
-        let conn = self.connection()?;
-        Ok(StoreKeysPrefixes::new(
-            self.list_child_keys(&conn, prefix)?,
-            self.list_child_prefixes(&conn, prefix)?,
-        ))
+        let Some((q, p)) = queries::list_dir_query(prefix) else {
+            let q = queries::list_dir_root_query();
+            return self.list_dir_inner(q, ());
+        };
+        self.list_dir_inner(q, p)
     }
 
     fn size_prefix(&self, prefix: &StorePrefix) -> Result<u64, StorageError> {
+        let Some((query, params)) = queries::size_prefix_query(prefix) else {
+            return self.size();
+        };
         let conn = self.connection()?;
-        let (query, params) = queries::size_prefix_query(prefix);
         let size: i64 = conn
             .query_row(query, params, |r| r.get(0))
             .map_err(crate::Error::from)?;
@@ -424,11 +434,6 @@ mod tests {
         Arc::new(store)
     }
 
-    fn make_and_get_meta(path: impl AsRef<Path>) -> crate::Metadata {
-        let store = RusqliteStore::new(&Options::new_local(path.as_ref()).create()).unwrap();
-        store.read_metadata().unwrap()
-    }
-
     #[test]
     fn truncate_store() {
         init();
@@ -436,11 +441,15 @@ mod tests {
         let p = zarrdb_path(&dir);
 
         assert!(!std::fs::exists(&p).unwrap());
-        let orig_meta = make_and_get_meta(&p);
+        let store =
+            RusqliteStore::new(&Options::new_local(&p).create().created_by("first")).unwrap();
+        let orig_meta = store.read_metadata().unwrap();
+        assert_eq!(orig_meta.created_by.as_deref(), Some("first"));
 
-        let store2 = RusqliteStore::new(&Options::new_local(&p).truncate()).unwrap();
+        let store2 =
+            RusqliteStore::new(&Options::new_local(&p).truncate().created_by("second")).unwrap();
         let new_meta = store2.read_metadata().unwrap();
-        assert!(new_meta.created_at > orig_meta.created_at);
+        assert_eq!(new_meta.created_by.as_deref(), Some("second"));
     }
 
     #[test]

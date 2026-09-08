@@ -75,12 +75,17 @@ impl Options {
 
     /// If the SQLite file already exists, delete it first.
     /// Implies `write`, but not `create`.
+    ///
+    /// `truncate+create` will result in a fresh database whether or not one existed in the first place;
+    /// `truncate+!create` will result in an error if the database does not already exist, but will overwrite an existing one.
     pub fn truncate(mut self) -> Self {
         self.truncate = true;
         self.write()
     }
 
-    /// Ignored if the database is not newly created by this builder.
+    /// Only used if creating a new or overwriting a truncated file.
+    ///
+    /// If not given, will use the crate name and version.
     pub fn created_by(mut self, created_by: impl Into<String>) -> Self {
         self.created_by = Some(created_by.into());
         self

@@ -10,7 +10,7 @@ use crate::{APPLICATION_ID, Metadata};
 pub const SUPPORTS_GET_PARTIAL: bool = true;
 pub const SUPPORTS_SET_PARTIAL: bool = false;
 
-pub fn set_pragma_query() -> String {
+pub fn set_application_id_pragma() -> String {
     format!("PRAGMA application_id = 0x{APPLICATION_ID:x};")
 }
 
@@ -31,14 +31,15 @@ pub fn create_zarr_table_query() -> &'static str {
 pub fn create_schema_queries() -> String {
     format!(
         "BEGIN;\n{}\n{}\n{}\nCOMMIT;",
-        set_pragma_query(),
+        set_application_id_pragma(),
         create_metadata_table_query(),
         create_zarr_table_query()
     )
 }
 
 pub fn update_modified_at_query() -> &'static str {
-    "INSERT OR REPLACE INTO zarr_sqlitestore_metadata(k, v) VALUES ('modified_at', strftime('%Y-%m-%dT%H:%M:%fZ', 'now', 'utc', 'subsec'));"
+    "INSERT INTO zarr_sqlitestore_metadata(k, v) VALUES ('modified_at', strftime('%Y-%m-%dT%H:%M:%fZ', 'now', 'utc', 'subsec')) ON CONFLICT(k)
+    DO UPDATE SET v = excluded.v;;"
 }
 
 pub fn read_metadata_query() -> &'static str {
@@ -50,51 +51,123 @@ pub fn insert_unknown_metadata_query<'a>(
     v: &'a impl AsRef<str>,
 ) -> (&'static str, (&'a str, &'a str)) {
     (
-        "INSERT OR REPLACE INTO zarr_sqlitestore_metadata(k, v) VALUES(?1, ?2);",
+        "INSERT INTO zarr_sqlitestore_metadata(k, v) VALUES(?1, ?2) ON CONFLICT(k) DO UPDATE SET v = excluded.v;",
         (k.as_ref(), v.as_ref()),
     )
 }
 
-pub fn insert_metadata_query(metadata: &Metadata) -> (&'static str, [String; 6]) {
+pub fn insert_core_metadata_query(metadata: &Metadata) -> (&'static str, [String; 3]) {
     (
-        "INSERT OR REPLACE INTO zarr_sqlitestore_metadata (k, v) VALUES
+        "INSERT INTO zarr_sqlitestore_metadata (k, v) VALUES
                 ('sqlitestore_version', ?1),
                 ('compatible_flags', ?2),
-                ('incompatible_flags', ?3),
-                ('created_by', ?4),
-                ('created_at', ?5),
-                ('modified_at', ?6);",
+                ('incompatible_flags', ?3)
+            ON CONFLICT(k) DO UPDATE SET v=excluded.v;",
         [
             metadata.sqlitestore_version.to_string(),
             metadata.compatible_flags.to_string(),
             metadata.incompatible_flags.to_string(),
-            metadata.created_by.clone(),
-            metadata.created_at.to_string(),
-            metadata.modified_at.to_string(),
         ],
     )
 }
 
-/// Returns rows with 1 string column.
-pub fn list_child_keys_query(prefix: &StorePrefix) -> (&'static str, (String, String)) {
-    (
-        "SELECT k FROM zarr WHERE k LIKE ? and k NOT LIKE ?;",
-        (format!("{prefix}%"), format!("{prefix}%/%")),
-    )
+fn maybe_insert_metadata_kv_query<'a>(
+    k: &'a str,
+    v: Option<&'a str>,
+) -> Option<(&'static str, (&'a str, &'a str))> {
+    v.as_ref().map(|v| {
+        (
+            "INSERT INTO zarr_sqlitestore_metadata(k, v) VALUES(?1, ?2)
+            ON CONFLICT DO UPDATE SET v=excluded.v;",
+            (k, *v),
+        )
+    })
 }
 
-/// Returns rows with 1 string column.
-pub fn list_dir_prefixes_query(prefix: &StorePrefix) -> (&'static str, (i64, i64, String)) {
-    (
-        "SELECT DISTINCT substr(k, 1, instr(substr(k, ?), '/') + ?)
-         FROM zarr
-         WHERE k LIKE ?;",
+pub fn maybe_insert_created_by_query(metadata: &Metadata) -> Option<(&'static str, (&str, &str))> {
+    maybe_insert_metadata_kv_query("created_by", metadata.created_by.as_deref())
+}
+
+pub fn maybe_insert_modified_at_query(metadata: &Metadata) -> Option<(&'static str, (String,))> {
+    metadata.modified_at.as_ref().map(|modified_at| {
         (
-            prefix.as_str().len() as i64 + 1,
-            prefix.as_str().len() as i64,
-            format!("{prefix}%/%"),
-        ),
+            "INSERT INTO zarr_sqlitestore_metadata(k, v) VALUES('modified_at', ?1)
+            ON CONFLICT DO UPDATE SET v=excluded.v;",
+            (modified_at.to_string(),),
+        )
+    })
+}
+
+/// If the store prefix is not the root (empty), returns a string that is the prefix with the trailing `/` replaced by `0`.
+///
+/// Used in descendant-listing queries.
+fn prefix_upper(prefix: &StorePrefix) -> Option<String> {
+    if prefix.as_str().is_empty() {
+        return None;
+    }
+    let mut s = prefix.to_string();
+    s.pop().expect("prefix should not be empty");
+    s.push('0');
+    Some(s)
+}
+
+/// Returns None if root.
+pub fn list_prefix_query(prefix: &StorePrefix) -> Option<(&'static str, (String, String))> {
+    let upper = prefix_upper(prefix)?;
+
+    let q = "SELECT k FROM zarr WHERE k > ?1 AND k < ?2;";
+    Some((q, (prefix.to_string(), upper)))
+}
+
+/// Query for list_dir on the root of the store (empty prefix).
+///
+/// Query returns 2 columns: `type` (either `'k'` for key or `'p'` for prefix) and `path` (which will end with `/` for prefixes).
+pub fn list_dir_root_query() -> &'static str {
+    "SELECT
+        'k' AS type,
+        k AS path
+    FROM zarr
+    WHERE instr(k, '/') = 0
+
+    UNION
+
+    SELECT DISTINCT
+        'p' AS type,
+        substr(k, 1, instr(k, '/')) AS path
+    FROM zarr
+    WHERE instr(k, '/') > 0
+
+    ORDER BY path;"
+}
+
+/// Query for list_dir.
+///
+/// Query returns 2 columns: `type` (either `'k'` for key or `'p'` for prefix) and `path` (which will end with `/` for prefixes).
+pub fn list_dir_query(prefix: &StorePrefix) -> Option<(&'static str, (String, String))> {
+    let upper = prefix_upper(prefix)?;
+
+    let q = "WITH matches AS (
+        SELECT
+            k,
+            substr(k, length(?1) + 1) AS rest
+        FROM zarr
+        WHERE k > ?1
+          AND k < ?2
     )
+    SELECT
+        'k' AS type,
+        k AS path
+    FROM matches
+    WHERE instr(rest, '/') = 0
+
+    UNION
+
+    SELECT DISTINCT
+        'p' AS type,
+        ?1 || substr(rest, 1, instr(rest, '/')) AS path
+    FROM matches
+    WHERE instr(rest, '/') > 0;";
+    Some((q, (prefix.to_string(), upper)))
 }
 
 /// Returns rows with 1 blob column.
@@ -178,19 +251,12 @@ pub fn list_all_query() -> &'static str {
     "SELECT k FROM zarr;"
 }
 
-/// Returns rows with 1 string column.
-pub fn list_prefix_query(prefix: &StorePrefix) -> (&'static str, (String,)) {
-    (
-        "SELECT k FROM zarr WHERE k LIKE ?;",
-        (format!("{prefix}%"),),
-    )
-}
-
-pub fn size_prefix_query(prefix: &StorePrefix) -> (&'static str, (String,)) {
-    (
-        "SELECT sum(length(v)) FROM zarr WHERE k LIKE ?;",
-        (format!("{prefix}%"),),
-    )
+pub fn size_prefix_query(prefix: &StorePrefix) -> Option<(&'static str, (String, String))> {
+    let upper = prefix_upper(prefix)?;
+    Some((
+        "SELECT k FROM zarr WHERE k > ?1 AND k < ?2;",
+        (prefix.to_string(), upper),
+    ))
 }
 
 /// Returns 1 row with 1 integer column.
@@ -200,7 +266,7 @@ pub fn size_total_query() -> &'static str {
 
 pub fn set_query<'a>(key: &'a StoreKey, value: &'a [u8]) -> (&'static str, (&'a str, &'a [u8])) {
     (
-        "INSERT OR REPLACE INTO zarr(k, v) VALUES(?1, ?2);",
+        "INSERT INTO zarr(k, v) VALUES(?1, ?2) ON CONFLICT (k) DO UPDATE SET v = excluded.v;",
         (key.as_str(), value),
     )
 }

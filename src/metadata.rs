@@ -119,9 +119,8 @@ pub struct Metadata {
     pub sqlitestore_version: Version,
     pub compatible_flags: Flags,
     pub incompatible_flags: Flags,
-    pub created_by: String,
-    pub created_at: Timestamp,
-    pub modified_at: Timestamp,
+    pub created_by: Option<String>,
+    pub modified_at: Option<Timestamp>,
     /// Any unknown key-value pairs found in the metadata table.
     pub unknown: BTreeMap<String, String>,
 }
@@ -132,7 +131,6 @@ pub(crate) struct MetadataBuilder {
     compatible_flags: Option<Flags>,
     incompatible_flags: Option<Flags>,
     created_by: Option<String>,
-    created_at: Option<Timestamp>,
     modified_at: Option<Timestamp>,
     unknown: BTreeMap<String, String>,
 }
@@ -162,11 +160,12 @@ impl MetadataBuilder {
             "created_by" => {
                 self.created_by = Some(value.to_string());
             }
-            "created_at" => {
-                self.created_at = Some(value.parse().map_err(|_| invalid())?);
-            }
             "modified_at" => {
-                self.modified_at = Some(value.parse().map_err(|_| invalid())?);
+                let Ok(dt) = value.parse() else {
+                    log::warn!("Ignoring invalid modified_at timestamp: {value}");
+                    return Ok(false);
+                };
+                self.modified_at = Some(dt);
             }
             _ => {
                 self.unknown.insert(key.to_string(), value.to_string());
@@ -183,21 +182,12 @@ impl MetadataBuilder {
         })?;
         let compatible_flags = self.compatible_flags.unwrap_or_default();
         let incompatible_flags = self.incompatible_flags.unwrap_or_default();
-        let created_by = self.created_by.unwrap_or_default();
-        let created_at = self
-            .created_at
-            .ok_or_else(|| crate::Error::InvalidMetadata {
-                key: "created_at".to_string(),
-                value: None,
-            })?;
-        let modified_at = self.modified_at.unwrap_or(created_at);
         Ok(Metadata {
             sqlitestore_version: version,
             compatible_flags,
             incompatible_flags,
-            created_by,
-            created_at,
-            modified_at,
+            created_by: self.created_by,
+            modified_at: self.modified_at,
             unknown: self.unknown,
         })
     }
@@ -205,14 +195,12 @@ impl MetadataBuilder {
 
 impl Default for Metadata {
     fn default() -> Self {
-        let t = Timestamp::now();
         Self {
             sqlitestore_version: crate::LATEST_VERSION,
             compatible_flags: Default::default(),
             incompatible_flags: Default::default(),
-            created_by: String::new(),
-            created_at: t,
-            modified_at: t,
+            created_by: None,
+            modified_at: None,
             unknown: Default::default(),
         }
     }
@@ -221,7 +209,7 @@ impl Default for Metadata {
 impl Metadata {
     pub(crate) fn with_created_by(created_by: impl Into<String>) -> Self {
         Self {
-            created_by: created_by.into(),
+            created_by: Some(created_by.into()),
             ..Default::default()
         }
     }
