@@ -6,9 +6,10 @@ use zarrs::{
         StorePrefix,
     },
 };
+use zarrs_sqlite::TursoStore;
 const PATH: &str = "examples/turso_example.zarrdb";
 
-async fn make_store(first: bool) -> AsyncReadableWritableListableStorage {
+async fn make_store(first: bool) -> TursoStore {
     let mut opts = zarrs_sqlite::Options::new_local(PATH);
     if first {
         opts = opts.create().truncate();
@@ -21,7 +22,7 @@ async fn make_store(first: bool) -> AsyncReadableWritableListableStorage {
         .await
         .expect("Failed to read metadata");
     println!("Metadata: {:?}", metadata);
-    Arc::new(store)
+    store
 }
 
 async fn make_array(
@@ -44,10 +45,12 @@ async fn main() {
     env_logger::init();
     {
         let store = make_store(true).await;
-        make_array(store.clone()).await;
+        make_array(Arc::new(store.clone())).await;
+        let checkpoint = store.checkpoint().await.unwrap().unwrap();
+        assert!(!checkpoint.busy)
     }
 
-    let store2 = make_store(false).await;
+    let store2: AsyncReadableWritableListableStorage = Arc::new(make_store(false).await);
     let keys = store2.list().await.unwrap();
     println!("Keys: {:?}", keys);
     let children = store2
