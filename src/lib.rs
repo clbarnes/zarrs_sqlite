@@ -15,6 +15,9 @@ pub use error::{Error, Result};
 mod metadata;
 pub use metadata::{Flags, Metadata, Timestamp, Version};
 
+mod types;
+pub use types::{CheckpointResult, PageWriteCounts};
+
 mod options;
 mod queries;
 pub use options::Options;

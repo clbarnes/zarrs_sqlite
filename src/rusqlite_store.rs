@@ -11,11 +11,12 @@ use zarrs_storage::{
 use crate::{
     Options,
     queries::{self, SUPPORTS_GET_PARTIAL, SUPPORTS_SET_PARTIAL},
+    types::CheckpointResult,
 };
 
 /// Zarr store backed by an SQLite database using the [rusqlite](https://github.com/rusqlite/rusqlite) crate,
 /// which binds to libsqlite3.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RusqliteStore {
     pool: r2d2::Pool<SqliteConnectionManager>,
     write: bool,
@@ -54,6 +55,23 @@ impl RusqliteStore {
             store.update_modified_at()?;
         }
         Ok(store)
+    }
+
+    pub fn checkpoint(&self) -> Result<Option<CheckpointResult>, crate::Error> {
+        if !self.write {
+            return Ok(None);
+        }
+        let conn = self.connection()?;
+        let res = conn.query_one("PRAGMA wal_checkpoint(TRUNCATE);", (), |r| {
+            Ok(CheckpointResult::new(r.get(0)?, r.get(1)?, r.get(2)?))
+        })?;
+        Ok(Some(res))
+    }
+
+    pub fn vacuum(&self) -> Result<(), crate::Error> {
+        let conn = self.connection()?;
+        conn.execute("VACUUM;", ())?;
+        Ok(())
     }
 
     fn update_modified_at(&self) -> Result<(), crate::Error> {

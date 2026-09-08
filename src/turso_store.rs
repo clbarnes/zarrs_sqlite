@@ -13,6 +13,7 @@ use crate::{
     Metadata,
     options::Options,
     queries::{self, SUPPORTS_GET_PARTIAL, SUPPORTS_SET_PARTIAL},
+    types::CheckpointResult,
 };
 
 const MEMORY_PATH: &str = ":memory:";
@@ -52,6 +53,36 @@ impl TursoStore {
             store.update_modified_at().await?;
         }
         Ok(store)
+    }
+
+    /// Write the current write-ahead log to the database
+    /// and truncate the WAL.
+    ///
+    /// Should be called when a program is about to exit, to ensure that all writes are persisted.
+    /// Only necessary for write-enabled file-backed stores.
+    pub async fn checkpoint(&self) -> Result<Option<CheckpointResult>, crate::Error> {
+        if !self.write {
+            return Ok(None);
+        }
+        let conn = self.connection()?;
+
+        let mut rows = conn.query("PRAGMA wal_checkpoint(TRUNCATE);", ()).await?;
+        let row = rows
+            .next()
+            .await?
+            .expect("PRAGMA wal_checkpoint should return a row");
+        let res = CheckpointResult::new(row.get(0)?, row.get(1)?, row.get(2)?);
+
+        Ok(Some(res))
+    }
+
+    /// Defragment the database file.
+    ///
+    /// May transiently take up twice the space of the database file.
+    pub async fn vacuum(&self) -> Result<(), crate::Error> {
+        let conn = self.connection()?;
+        conn.execute("VACUUM;", ()).await?;
+        Ok(())
     }
 
     fn connection(&self) -> Result<LoggingConnection, crate::Error> {
@@ -458,7 +489,7 @@ impl AsyncWritableStorageTraits for TursoStore {
 #[cfg(test)]
 mod tests {
     use crate::tests::init;
-    use std::sync::Arc;
+    use std::{fs, sync::Arc};
     use temp_testdir::TempDir;
 
     use super::TursoStore;
@@ -627,5 +658,28 @@ mod tests {
             .await
             .unwrap();
         check_strlike_contents(&read_descendants, &["a/b", "a/c/d"]);
+    }
+
+    #[tokio::test]
+    async fn wal_checkpoint() {
+        init();
+        let dir = TempDir::default();
+        let p = zarrdb_path(&dir);
+        let wal = p.clone() + "-wal";
+        let store = TursoStore::new(&Options::new_local(&p).create())
+            .await
+            .unwrap();
+        let storage: AsyncReadableWritableListableStorage = Arc::new(store.clone());
+        let key = StoreKey::new("test_key").unwrap();
+        let data = Bytes::from_static(b"Hello, world!");
+        storage.set(&key, data).await.unwrap();
+
+        let wal_contents_before = fs::read(&wal).expect("could not read WAL before checkpoint");
+        store.checkpoint().await.expect("could not checkpoint");
+        let wal_contents_after = fs::read(&wal).expect("could not read WAL after checkpoint");
+        assert!(
+            wal_contents_after.len() < wal_contents_before.len(),
+            "WAL file should be smaller after checkpoint"
+        );
     }
 }

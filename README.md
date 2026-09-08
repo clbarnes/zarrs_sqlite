@@ -19,7 +19,7 @@ let options = Options::new_memory()
 // Stores are opened read-only by default, unless `.create()`, `.truncate()`, or `.write()` are used.
 
 let inner = RusqliteStore::new(&options).expect("could not open store");
-// Alternatively use `TursoStore` for async.
+// Alternatively use `TursoStore` for WAL + async.
 
 let store: ReadableWritableListableStorage = Arc::new(inner);
 ```
@@ -30,7 +30,18 @@ let store: ReadableWritableListableStorage = Arc::new(inner);
 
 This crate supports multiple SQLite backends, each behind a cargo feature.
 
-| store | feature | backend | notes |
-| - | - | - | - |
-| `RusqliteStore` | `backend-rusqlite` | [rusqlite](https://github.com/rusqlite/rusqlite) + [r2d2](https://github.com/sfackler/r2d2) | Sync, binds to libsqlite3; default |
-| `TursoStore` | `backend-turso` | [turso](https://github.com/tursodatabase/turso) | Async (requires tokio), pure rust |
+#### `RusqliteStore`
+
+- feature: `backend-rusqlite` (default)
+- crates: [rusqlite](https://github.com/rusqlite/rusqlite) + [r2d2](https://github.com/sfackler/r2d2)
+
+Synchronous store which uses connection pooling and binds to libsqlite3.
+
+#### `TursoStore`
+
+- feature: `backend-turso`
+- crates: [turso](https://github.com/tursodatabase/turso) + [tokio](https://github.com/tokio-rs/tokio)
+
+Asynchronous store written in pure rust which uses write-ahead log journaling by default.
+
+After you've finished writing to the store, use `my_store.checkpoint().await` to write the contents of the WAL to the main database file.
