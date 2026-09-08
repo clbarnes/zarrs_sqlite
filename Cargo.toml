@@ -7,7 +7,7 @@ repository = "https://github.com/clbarnes/zarrs_sqlite"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-keywords = ["zarr", "zarrs", "sqlite", "turso", "async", "storage"]
+keywords = ["zarr", "zarrs", "sqlite", "store"]
 categories = ["database", "science"]
 
 [dependencies]
