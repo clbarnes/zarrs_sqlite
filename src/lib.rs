@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 #[cfg(feature = "backend-turso")]
 mod turso_store;
 #[cfg(feature = "backend-turso")]

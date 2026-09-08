@@ -5,16 +5,19 @@ An SQLite-based Zarr store for the [zarrs](https://zarrs.dev/) ecosystem, implem
 ## Usage
 
 ```rust
-/// `None` would build an in-memory database.
-let mut builder = zarrs_sqlite::TursoStore::builder(Some("path/to/file.zarrdb"));
+// Use new_local("path/to/file.zarrdb") for a file-backed database.
+let options = zarrs_sqlite::Options::new_memory()
+    // Allow (but do not require) creation of new database.
+    .create()
+    // Allow (but do not require) deleting an existing database.
+    .truncate();
 
-// By default, this will be read-only and the database must already exist.
+// Stores are opened read-only by default, unless `.create()`, `.truncate()`, or `.write()` are used.
 
-// The below allows the builder to create a new database, and truncates any existing database.
-builder.create().truncate();
+let inner = zarrs_sqlite::RusqliteStore::new(&options).expect("could not open store");
+// Alternatively use `zarrs_sqlite::TursoStore` for async.
 
-let inner = builder.build().await.unwrap();
-let store: zarrs::storage::AsyncReadableWritableListableStorage = Arc::new(inner);
+let store: zarrs::storage::ReadableWritableListableStorage = std::sync::Arc::new(inner);
 ```
 
 ## Features
